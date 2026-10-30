@@ -389,13 +389,19 @@ openvpn_selected_dir() {
   fi
 }
 
-openvpn_remember_profile() {
-  local target="$1"
-  [[ -n "$target" && -r "$target" ]] || return 1
+openvpn_remember_profiles() {
+  local files=("$@")
+  ((${#files[@]} > 0)) || return 0
   {
     [[ -r "$openvpn_profiles_file" ]] && sed '/^[[:space:]]*$/d' "$openvpn_profiles_file"
-    printf '%s\n' "$target"
+    for f in "${files[@]}"; do
+      [[ -n "$f" && -r "$f" ]] && printf '%s\n' "$f"
+    done
   } | awk '!seen[$0]++' | openvpn_atomic_publish "$openvpn_profiles_file"
+}
+
+openvpn_remember_profile() {
+  openvpn_remember_profiles "$@"
 }
 
 openvpn_known_profiles() {

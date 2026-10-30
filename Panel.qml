@@ -520,6 +520,8 @@ Panel {
               text: "Add Profile"
               iconText: "󰈔"
               bordered: true
+              tooltipText: "Select one or multiple .ovpn / .conf files to import"
+              enabled: !service.busy
               Layout.preferredWidth: (parent.width - parent.spacing) / 2
               Layout.fillWidth: true
               foreground: root.foreground
@@ -534,6 +536,8 @@ Panel {
               text: "Open Folder"
               iconText: ""
               bordered: true
+              tooltipText: "Select a folder to import all configuration files"
+              enabled: !service.busy
               Layout.preferredWidth: (parent.width - parent.spacing) / 2
               Layout.fillWidth: true
               foreground: root.foreground

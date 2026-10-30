@@ -133,7 +133,9 @@ Item {
   }
 
   function openFolder() {
-    runControl("open_folder")
+    if (pickerProc.running) return
+    pickerProc.command = [scriptPath, "open_folder"]
+    pickerProc.running = true
   }
 
   function setCredentials(user, pass) {

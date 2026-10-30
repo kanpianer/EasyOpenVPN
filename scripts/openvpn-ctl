@@ -1372,33 +1372,106 @@ set_config_dir)
   echo "ok"
   ;;
 
-	pick_file|add_profile)
-	  file=""
-	  if command -v zenity &>/dev/null; then
-	    file=$(zenity --file-selection --title="Add OpenVPN Profile" --file-filter="OpenVPN Config (*.ovpn *.conf) | *.ovpn *.conf" 2>/dev/null || true)
-	  elif command -v omarchy-file-select &>/dev/null; then
-	    file=$(omarchy-file-select --title "Add OpenVPN Profile" --extensions "ovpn conf" 2>/dev/null || true)
-	  fi
+pick_file|add_profile)
+  start_dir=$(openvpn_selected_dir 2>/dev/null || true)
+  if [[ -z "$start_dir" || ! -d "$start_dir" ]]; then
+    if [[ -d "$HOME/Downloads" ]]; then
+      start_dir="$HOME/Downloads"
+    else
+      start_dir="$HOME"
+    fi
+  fi
 
-	  if [[ -n "$file" && -r "$file" ]]; then
-	    openvpn_secure_write_line "$openvpn_config_file" "$file"
-	    openvpn_secure_write_line "$openvpn_config_dir_file" "$(dirname "$file")"
-	    openvpn_remember_profile "$file"
-	    echo "$file"
+  files_raw=""
+  if command -v zenity &>/dev/null; then
+    files_raw=$(zenity --file-selection --multiple --separator=$'\n' \
+      --title="Add OpenVPN Profiles" \
+      ${start_dir:+--filename="$start_dir/"} \
+      --file-filter="OpenVPN Config (*.ovpn *.conf) | *.ovpn *.conf *.OVPN *.CONF" \
+      --file-filter="All Files (*.*) | *" 2>/dev/null || true)
+  elif command -v omarchy-file-select &>/dev/null; then
+    files_raw=$(omarchy-file-select --title "Add OpenVPN Profiles" --multiple --extensions "ovpn conf" 2>/dev/null || true)
+  fi
+
+  found_files=()
+  if [[ -n "$files_raw" ]]; then
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      if [[ -f "$f" && -r "$f" ]]; then
+        case "${f,,}" in
+          *.ovpn|*.conf)
+            found_files+=("$f")
+            ;;
+        esac
+      fi
+    done <<< "$files_raw"
+  fi
+
+  if ((${#found_files[@]} > 0)); then
+    openvpn_remember_profiles "${found_files[@]}"
+
+    first_file="${found_files[0]}"
+    openvpn_secure_write_line "$openvpn_config_dir_file" "$(dirname -- "$first_file")"
+
+    current_selected=$(openvpn_selected_config 2>/dev/null || true)
+    if [[ -z "$current_selected" || ! -r "$current_selected" ]]; then
+      openvpn_secure_write_line "$openvpn_config_file" "$first_file"
+    elif ! openvpn_tunnel_established && ! openvpn_process_alive; then
+      openvpn_secure_write_line "$openvpn_config_file" "$first_file"
+    fi
+    echo "imported ${#found_files[@]} profiles"
   else
     echo "cancelled"
   fi
   ;;
 
-open_folder)
-  dir=$(openvpn_selected_dir 2>/dev/null || true)
-  [[ -z "$dir" ]] && dir="$HOME"
-  if command -v nautilus &>/dev/null; then
-    nautilus "$dir" &>/dev/null &
-  elif command -v xdg-open &>/dev/null; then
-    xdg-open "$dir" &>/dev/null &
+open_folder|pick_folder|import_folder)
+  start_dir=$(openvpn_selected_dir 2>/dev/null || true)
+  if [[ -z "$start_dir" || ! -d "$start_dir" ]]; then
+    if [[ -d "$HOME/Downloads" ]]; then
+      start_dir="$HOME/Downloads"
+    else
+      start_dir="$HOME"
+    fi
   fi
-  echo "ok"
+
+  selected_dir=""
+  if command -v zenity &>/dev/null; then
+    selected_dir=$(zenity --file-selection --directory \
+      --title="Select Folder with OpenVPN Profiles" \
+      ${start_dir:+--filename="$start_dir/"} 2>/dev/null || true)
+  elif command -v omarchy-file-select &>/dev/null; then
+    selected_dir=$(omarchy-file-select --title "Select Folder with OpenVPN Profiles" --directory 2>/dev/null || true)
+  fi
+
+  if [[ -n "$selected_dir" && -d "$selected_dir" ]]; then
+    selected_dir=$(realpath -e -- "$selected_dir" 2>/dev/null || echo "$selected_dir")
+    openvpn_secure_write_line "$openvpn_config_dir_file" "$selected_dir"
+
+    found_files=()
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      if [[ -f "$f" && -r "$f" ]]; then
+        found_files+=("$f")
+      fi
+    done < <(find -L "$selected_dir" -maxdepth 4 -type f \( -name '*.ovpn' -o -name '*.conf' -o -name '*.OVPN' -o -name '*.CONF' \) ! -path '*/.*' 2>/dev/null | sort)
+
+    if ((${#found_files[@]} > 0)); then
+      openvpn_remember_profiles "${found_files[@]}"
+
+      current_selected=$(openvpn_selected_config 2>/dev/null || true)
+      if [[ -z "$current_selected" || ! -r "$current_selected" ]]; then
+        openvpn_secure_write_line "$openvpn_config_file" "${found_files[0]}"
+      elif ! openvpn_tunnel_established && ! openvpn_process_alive; then
+        openvpn_secure_write_line "$openvpn_config_file" "${found_files[0]}"
+      fi
+      echo "imported ${#found_files[@]} profiles from $selected_dir"
+    else
+      echo "no profiles found in $selected_dir"
+    fi
+  else
+    echo "cancelled"
+  fi
   ;;
 
 set_credentials)

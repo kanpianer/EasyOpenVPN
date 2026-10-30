@@ -13,8 +13,8 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
 ## Features
 
 - **Profile Management**:
-  - Add `.ovpn` or `.conf` configuration files with a graphical file picker (**Add Profile**).
-  - Open the configuration directory in your file manager (**Open Folder**).
+  - Add `.ovpn` or `.conf` configuration files with multi-selection file picker (**Add Profile**).
+  - Select a folder containing configuration files to import all of them at once (**Open Folder**).
   - **Drag-and-Drop Reordering**: Press and hold any profile to drag and reorder; custom order is automatically saved across restarts.
   - **Multi-Selection & Batch Delete**: Select individual profiles with checkboxes or click **Select All**, then remove them with **Delete**.
   - **Quick Single-Profile Delete**: Per-profile trash icon with two-step click-to-confirm safety.
@@ -71,12 +71,6 @@ The plugin also uses standard command-line tools included with Omarchy and Arch 
 
 ### Via Omarchy Plugin Manager
 
-Install dependencies:
-
-```sh
-omarchy pkg add openvpn jq zenity python nftables
-```
-
 Add and enable the plugin:
 
 ```sh
@@ -102,7 +96,7 @@ You can also install from a local checkout:
 ## Usage
 
 1. **Open the Panel**: Click the EasyOpenVPN icon in the Omarchy status bar.
-2. **Add Profiles**: Click **Add Profile** to select one or more `.ovpn` or `.conf` files. Click **Open Folder** to view or manage them in your file manager.
+2. **Add Profiles**: Click **Add Profile** to select one or multiple `.ovpn` or `.conf` files. Click **Open Folder** to select a folder and batch import all OpenVPN configuration files contained inside.
 3. **Reorder Profiles**: Long-press (press and hold) a profile row and drag it to your preferred position in the list.
 4. **Manage Profiles**: Use the checkboxes to select profiles and click **Delete** (or click the individual trash icon) to remove profiles.
 5. **Set Credentials**: If your VPN requires authentication, enter your username and password, then click **Save for Profile**.
