@@ -277,7 +277,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(headerCol.implicitHeight + scrollCol.implicitHeight + Style.spacing.panelPadding * 2 + Style.space(20) + verText.implicitHeight, Style.space(560))
+    contentHeight: panel.fittedContentHeight(headerCol.implicitHeight + scrollCol.implicitHeight + Style.spacing.panelPadding * 2 + Style.space(16), Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -289,51 +289,10 @@ Panel {
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
-      // Version label at the bottom center of the panel
-      Item {
-        id: versionBadge
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: Style.space(6)
-        anchors.horizontalCenter: parent.horizontalCenter
-        implicitWidth: verText.implicitWidth + Style.space(8)
-        implicitHeight: verText.implicitHeight + Style.space(4)
-        width: implicitWidth
-        height: implicitHeight
-        z: 20
-
-        Text {
-          id: verText
-          anchors.centerIn: parent
-          text: "v 0.1"
-          color: versionMouse.containsMouse ? root.foreground : root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-        }
-
-        PanelToolTip {
-          visible: versionMouse.containsMouse
-          text: "EasyOpenVPN 0.1"
-          fontFamily: root.fontFamily
-        }
-
-        MouseArea {
-          id: versionMouse
-          anchors.fill: parent
-          hoverEnabled: true
-        }
-      }
-
       Item {
         id: panelContent
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: versionBadge.top
-        anchors.topMargin: Style.spacing.panelPadding
-        anchors.leftMargin: Style.spacing.panelPadding
-        anchors.rightMargin: Style.spacing.panelPadding
-        anchors.bottomMargin: Style.space(4)
+        anchors.fill: parent
+        anchors.margins: Style.spacing.panelPadding
 
         // --------------------------------------------------- FIXED TOP HEADER
         Column {
@@ -915,6 +874,44 @@ Panel {
             }
           }
         }
+      }
+    }
+  }
+
+  // Version label horizontally centered in the bottom black margin
+  Item {
+    id: versionBadge
+    anchors.top: panelContent.bottom
+    anchors.bottom: parent.bottom
+    anchors.horizontalCenter: parent.horizontalCenter
+    implicitWidth: verText.implicitWidth + Style.space(16)
+    width: implicitWidth
+    z: 20
+
+    Text {
+      id: verText
+      anchors.centerIn: parent
+      text: "v 0.1"
+      color: versionMouse.containsMouse ? root.foreground : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+
+    PanelToolTip {
+      visible: versionMouse.containsMouse
+      text: "EasyOpenVPN v 0.1 • Open GitHub"
+      fontFamily: root.fontFamily
+    }
+
+    MouseArea {
+      id: versionMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        root.close()
+        Qt.openUrlExternally("https://github.com/kanpianer/EasyOpenVPN")
       }
     }
   }
