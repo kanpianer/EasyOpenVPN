@@ -289,25 +289,24 @@ Panel {
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
-      // Version badge in the top-right corner without affecting panel layout or other elements
-      BorderSurface {
+      // Version label in the top-right corner without affecting panel layout or other elements
+      Item {
         id: versionBadge
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.topMargin: Style.space(6)
         anchors.rightMargin: Style.space(12)
-        implicitWidth: verText.implicitWidth + Style.space(12)
+        implicitWidth: verText.implicitWidth + Style.space(8)
         implicitHeight: verText.implicitHeight + Style.space(4)
-        color: Style.controlFill(false, false, root.foreground, Color.accent)
-        borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
-        radius: Style.cornerRadius
+        width: implicitWidth
+        height: implicitHeight
         z: 20
 
         Text {
           id: verText
           anchors.centerIn: parent
           text: "0.1"
-          color: root.foreground
+          color: versionMouse.containsMouse ? root.foreground : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           font.bold: true
@@ -500,95 +499,8 @@ Panel {
           }
         }
 
-        // -------------------------------------------------- LIVE TUNNEL INFO
-        Column {
-          visible: service.connected
-          width: parent.width
-          spacing: Style.space(6)
-
-          PanelSectionHeader {
-            text: "Tunnel Status"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          BorderSurface {
-            id: tunnelCard
-            width: parent.width
-            height: tunnelColumn.implicitHeight + tunnelCard.topPadding + tunnelCard.bottomPadding
-            padding: Style.space(10)
-            radius: Style.cornerRadius
-            color: Style.controlFill(false, false, root.foreground, Color.accent)
-
-            Column {
-              id: tunnelColumn
-              x: tunnelCard.contentLeftInset
-              y: tunnelCard.contentTopInset
-              width: tunnelCard.width - tunnelCard.contentLeftInset - tunnelCard.contentRightInset
-              spacing: Style.space(4)
-
-              RowLayout {
-                width: parent.width
-                Text {
-                  text: "Interface:"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  Layout.preferredWidth: Style.space(90)
-                }
-                Text {
-                  text: service.iface !== "" ? service.iface : "unknown"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  font.bold: true
-                  Layout.fillWidth: true
-                }
-              }
-
-              RowLayout {
-                width: parent.width
-                Text {
-                  text: "IP Address:"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  Layout.preferredWidth: Style.space(90)
-                }
-                Text {
-                  text: service.ip !== "" ? service.ip : "assigning…"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  font.bold: true
-                  Layout.fillWidth: true
-                }
-              }
-
-              RowLayout {
-                visible: service.bytesText !== ""
-                width: parent.width
-                Text {
-                  text: "Traffic:"
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  Layout.preferredWidth: Style.space(90)
-                }
-                Text {
-                  text: service.bytesText
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  Layout.fillWidth: true
-                }
-              }
-            }
-          }
-        }
-
         PanelSeparator {
-          visible: service.blocked || service.connected
+          visible: service.blocked
           width: parent.width
           foreground: root.foreground
         }

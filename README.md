@@ -4,7 +4,7 @@
   <img src="preview.png" alt="EasyOpenVPN Panel" width="380" />
 </p>
 
-EasyOpenVPN is a lightweight, secure Omarchy bar widget for managing and running OpenVPN connections directly from the Omarchy desktop shell. It provides a compact status icon, a full-featured profile manager, saved credentials, connect/disconnect controls, automatic kill-switch protection, live tunnel details, and recent OpenVPN log output.
+EasyOpenVPN is a lightweight, secure Omarchy bar widget for managing and running OpenVPN connections directly from the Omarchy desktop shell. It provides a compact status icon, a full-featured profile manager, saved credentials, connect/disconnect controls, automatic kill-switch protection, and recent OpenVPN log output.
 
 The plugin is intentionally focused: it does not require NetworkManager VPN plugins or systemd services. It is built for users who already have `.ovpn` or `.conf` files and want a streamlined, theme-aware bar widget with reliable connection status and instant leak protection.
 
@@ -41,8 +41,7 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
   - Run the included one-time setup (`sudo ./setup-passwordless.sh`) to authorize a locked-down control script via Polkit.
   - Replaces system password dialogs with a quick in-panel confirmation card.
 
-- **Live Diagnostics & Theming**:
-  - View active tunnel interface name, assigned IPv4 address, and real-time traffic statistics.
+- **Diagnostics & Theming**:
   - Embedded monospace log view showing recent OpenVPN output directly in the panel.
   - Themed OpenVPN icon in both the status bar and panel, automatically matching your active Omarchy theme colors.
 
