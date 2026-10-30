@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.diogogc.simple-openvpn",
-  "name": "SimpleOpenVPN",
-  "version": "1.0.0",
-  "author": "Diogo",
+  "id": "io.github.kanpianer.easy-openvpn",
+  "name": "EasyOpenVPN",
+  "version": "0.1",
+  "author": "kanpianer",
   "license": "MIT",
-  "description": "Simple OpenVPN toggle switch, profile selector, credentials manager, and live stats in the Omarchy bar.",
+  "description": "Easy OpenVPN toggle switch with accurate connection state, kill switch, optional passwordless connect, profile selector, credentials manager, and live stats in the Omarchy bar.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "SimpleOpenVPN",
-    "description": "Toggle OpenVPN connection, switch profiles, manage credentials, and view stats.",
+    "displayName": "EasyOpenVPN",
+    "description": "Toggle OpenVPN, see the real tunnel state, block the network if the VPN drops, switch profiles, manage credentials, and view stats.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right"

@@ -9,8 +9,27 @@
 # This file is sourced by openvpn-ctl. These path/uid variables are library
 # outputs, so ShellCheck sees some of them as unused when checking this file by
 # itself even though openvpn-ctl consumes them after sourcing.
-openvpn_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-openvpn"
-openvpn_runtime_dir="/run/simpleopenvpn-$(id -u)"
+#
+# The script can run in two modes:
+#
+#   * as the desktop user (normal status/settings/connect fallback), and
+#   * as root, when the root-owned copy under /usr/local/lib/simpleopenvpn is
+#     launched through pkexec for passwordless connect/disconnect.
+#
+# In the second mode pkexec sets PKEXEC_UID to the invoking desktop user. Root
+# must operate on that user's state and runtime paths, never on root's own.
+if [[ ${EUID:-$(id -u)} -eq 0 && -n ${PKEXEC_UID:-} ]]; then
+  openvpn_user_home=$(getent passwd "$PKEXEC_UID" 2>/dev/null | cut -d: -f6)
+  [[ -n "$openvpn_user_home" ]] || openvpn_user_home="/nonexistent"
+  openvpn_uid="$PKEXEC_UID"
+  openvpn_gid=$(id -g "$PKEXEC_UID" 2>/dev/null || printf '0')
+  openvpn_state_dir="$openvpn_user_home/.local/state/omarchy-openvpn"
+else
+  openvpn_uid="$(id -u)"
+  openvpn_gid="$(id -g)"
+  openvpn_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-openvpn"
+fi
+openvpn_runtime_dir="/run/simpleopenvpn-$openvpn_uid"
 openvpn_auth_dir="$openvpn_state_dir/auth"
 openvpn_config_file="$openvpn_state_dir/config"
 openvpn_config_dir_file="$openvpn_state_dir/config-dir"
@@ -20,8 +39,19 @@ openvpn_auth_file="$openvpn_runtime_dir/auth-user-pass"
 openvpn_pid_file="$openvpn_runtime_dir/openvpn.pid"
 openvpn_status_file="$openvpn_runtime_dir/openvpn.status"
 openvpn_log_file="$openvpn_runtime_dir/openvpn.log"
-openvpn_uid="$(id -u)"
-openvpn_gid="$(id -g)"
+# Kill switch runtime state. All of these live in the root-owned runtime
+# directory, so the desktop user can read the state file but cannot forge it or
+# delete the firewall rules it describes.
+openvpn_guard_pid_file="$openvpn_runtime_dir/guard.pid"
+openvpn_killswitch_file="$openvpn_runtime_dir/killswitch"
+openvpn_stop_file="$openvpn_runtime_dir/stop-requested"
+# Optional root-owned copy installed by setup-passwordless.sh. The ABI file is
+# written by that installer; bump it here and in the installer together when the
+# privileged interface changes.
+openvpn_installed_dir="/usr/local/lib/simpleopenvpn"
+openvpn_installed_ctl="$openvpn_installed_dir/openvpn-ctl"
+openvpn_installed_abi_file="$openvpn_installed_dir/abi"
+openvpn_helper_abi=1
 
 # Security model for unprivileged state:
 #
@@ -38,7 +68,7 @@ openvpn_gid="$(id -g)"
 # verified directory fds.
 
 openvpn_fail() {
-  printf 'SimpleOpenVPN: %s\n' "$*" >&2
+  printf 'EasyOpenVPN: %s\n' "$*" >&2
   return 1
 }
 
@@ -71,6 +101,32 @@ openvpn_validate_file() {
   [[ "$owner" == "$openvpn_uid" ]] || openvpn_fail "file not owned by current user: $file" || return 1
 }
 
+openvpn_root_owned_file() {
+  local file="$1" mode
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  [[ "$(stat -c '%u' -- "$file" 2>/dev/null)" == "0" ]] || return 1
+  mode=$(stat -c '%a' -- "$file" 2>/dev/null) || return 1
+  (( (8#$mode & 8#022) == 0 )) || return 1
+}
+
+openvpn_passwordless_available() {
+  # setup-passwordless.sh installs a root-owned copy of this plugin plus a
+  # narrow polkit rule for /usr/local/lib/simpleopenvpn/openvpn-ctl. Both files
+  # and the ABI marker must be present before the unprivileged script delegates
+  # to it, so a stale or partially installed copy is never trusted.
+  openvpn_root_owned_file "$openvpn_installed_ctl" || return 1
+  openvpn_root_owned_file "$openvpn_installed_dir/openvpn-lib" || return 1
+  [[ -r "$openvpn_installed_abi_file" ]] || return 1
+  [[ "$(<"$openvpn_installed_abi_file")" == "$openvpn_helper_abi" ]]
+}
+
+openvpn_can_delegate() {
+  # Only the unprivileged copy delegates. The installed root copy must do the
+  # privileged work itself, otherwise pkexec would recurse.
+  [[ ${EUID:-$(id -u)} -ne 0 ]] || return 1
+  openvpn_passwordless_available
+}
+
 openvpn_atomic_publish() {
   local file="$1" dir base
   dir=$(dirname -- "$file")
@@ -92,7 +148,7 @@ import sys
 directory, basename, uid_text = sys.argv[1:]
 uid = int(uid_text)
 if basename != os.path.basename(basename) or basename in ("", ".", ".."):
-    raise SystemExit("SimpleOpenVPN: invalid target filename")
+    raise SystemExit("EasyOpenVPN: invalid target filename")
 
 dir_flags = os.O_RDONLY
 if hasattr(os, "O_DIRECTORY"):
@@ -143,7 +199,7 @@ try:
     os.fsync(dir_fd)
     tmp = None
 except Exception as exc:
-    print(f"SimpleOpenVPN: secure write failed: {exc}", file=sys.stderr)
+    print(f"EasyOpenVPN: secure write failed: {exc}", file=sys.stderr)
     raise SystemExit(1)
 finally:
     if fd is not None:
@@ -201,7 +257,7 @@ import sys
 source, directory, basename, uid_text = sys.argv[1:]
 uid = int(uid_text)
 if basename != os.path.basename(basename) or basename in ("", ".", ".."):
-    raise SystemExit("SimpleOpenVPN: invalid target filename")
+    raise SystemExit("EasyOpenVPN: invalid target filename")
 
 read_flags = os.O_RDONLY
 dir_flags = os.O_RDONLY
@@ -265,7 +321,7 @@ try:
     os.fsync(dir_fd)
     tmp = None
 except Exception as exc:
-    print(f"SimpleOpenVPN: secure copy failed: {exc}", file=sys.stderr)
+    print(f"EasyOpenVPN: secure copy failed: {exc}", file=sys.stderr)
     raise SystemExit(1)
 finally:
     if tmp_fd is not None:
@@ -349,6 +405,20 @@ openvpn_known_profiles() {
   done < "$openvpn_profiles_file"
 }
 
+# Every profile the panel can list: remembered profiles plus the OpenVPN files
+# found in the selected config directory. Sorted and de-duplicated so callers
+# can treat it as the canonical node list.
+openvpn_all_profiles() {
+  local dir=""
+  dir=$(openvpn_selected_dir 2>/dev/null || true)
+  {
+    openvpn_known_profiles
+    if [[ -n "$dir" && -d "$dir" ]]; then
+      find "$dir" -maxdepth 2 -type f \( -name '*.ovpn' -o -name '*.conf' \) 2>/dev/null | sort
+    fi
+  } | grep -E '\.(ovpn|conf)$' | awk '!seen[$0]++'
+}
+
 openvpn_username() {
   local u
   u=$(openvpn_profile_username 2>/dev/null || true)
@@ -387,8 +457,90 @@ openvpn_is_running() {
   [[ -n "$(openvpn_matching_pids)" ]]
 }
 
+openvpn_log_iface() {
+  # OpenVPN logs the tunnel device it actually opened, which also covers
+  # profiles that do not use the default tun0/tap0 naming. Strip optional brackets
+  # because OpenVPN 2.7+ logs "tun/tap device [tun0] opened".
+  [[ -r "$openvpn_log_file" ]] || return 1
+  tail -c 131072 -- "$openvpn_log_file" 2>/dev/null |
+    sed -nE 's/.*(TUN\/TAP|tun\/tap|DCO|dco) device \[?([A-Za-z0-9_.:-]+)\]? opened.*/\2/p' |
+    tail -n 1
+}
+
 openvpn_tun_iface() {
+  local iface
+  iface=$(openvpn_log_iface 2>/dev/null || true)
+  if [[ -n "$iface" && -d "/sys/class/net/$iface" ]]; then
+    printf '%s\n' "$iface"
+    return 0
+  fi
+  # Otherwise prefer a tunnel device that already has an IPv4 address: OpenVPN
+  # creates the tun device early, but only assigns the pushed address once the
+  # TLS handshake with the server has completed.
+  for iface in $(ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^(tun|tap)[0-9]+$/ { print $2 }'); do
+    if ip -4 -o addr show dev "$iface" 2>/dev/null | grep -q ' inet '; then
+      printf '%s\n' "$iface"
+      return 0
+    fi
+  done
+  # Fall back to the bare device so callers can still show something while the
+  # tunnel is coming up.
   ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^(tun|tap)[0-9]+$/ { print $2; exit }'
+}
+
+openvpn_log_state() {
+  # The log is the authoritative record of the OpenVPN session: the tunnel is
+  # only usable after "Initialization Sequence Completed", and any restart or
+  # teardown marker afterwards means the server connection is gone.
+  [[ -r "$openvpn_log_file" ]] || { printf 'unknown'; return 1; }
+  tail -c 131072 -- "$openvpn_log_file" 2>/dev/null | awk '
+    BEGIN { state = "unknown" }
+    {
+      line = tolower($0)
+      if (index(line, "initialization sequence completed") > 0)
+        state = "up"
+      else if (index(line, "connection reset, restarting") > 0 ||
+               index(line, "restart pause") > 0 ||
+               index(line, "sigusr1[") > 0 ||
+               index(line, "sigterm[") > 0 ||
+               index(line, "process exiting") > 0 ||
+               index(line, "auth_failed") > 0 ||
+               index(line, "inactivity timeout") > 0 ||
+               index(line, "tls error") > 0 ||
+               index(line, "tls key negotiation failed") > 0 ||
+               index(line, "verification failed") > 0)
+        state = "down"
+    }
+    END { printf "%s", state }
+  '
+}
+
+openvpn_tunnel_established() {
+  local iface
+  openvpn_is_running || return 1
+  [[ "$(openvpn_log_state 2>/dev/null)" == "up" ]] || return 1
+  iface=$(openvpn_tun_iface 2>/dev/null) || return 1
+  [[ -n "$iface" ]] || return 1
+  ip -4 -o addr show dev "$iface" 2>/dev/null | grep -q ' inet '
+}
+
+openvpn_killswitch_active() {
+  [[ -r "$openvpn_killswitch_file" ]]
+}
+
+openvpn_killswitch_reason() {
+  [[ -r "$openvpn_killswitch_file" ]] || return 1
+  sed -n '1p' "$openvpn_killswitch_file"
+}
+
+openvpn_killswitch_since() {
+  [[ -r "$openvpn_killswitch_file" ]] || return 1
+  sed -n '2p' "$openvpn_killswitch_file"
+}
+
+openvpn_killswitch_enforced() {
+  [[ -r "$openvpn_killswitch_file" ]] || return 1
+  [[ "$(sed -n '3p' "$openvpn_killswitch_file")" == "1" ]]
 }
 
 openvpn_bytes_text() {

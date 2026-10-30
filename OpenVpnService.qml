@@ -6,9 +6,23 @@ import qs.Commons
 Item {
   id: root
 
-  property string scriptPath: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.diogogc.simple-openvpn/scripts/openvpn-ctl"
+  property string scriptPath: {
+    var resolved = Qt.resolvedUrl("scripts/openvpn-ctl").toString().replace(/^file:\/\//, "")
+    return resolved || (Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.kanpianer.easy-openvpn/scripts/openvpn-ctl")
+  }
 
+  // connected is only true once OpenVPN reports "Initialization Sequence
+  // Completed" and the tunnel device holds an IPv4 address. A running OpenVPN
+  // that is still handshaking is reported as connecting instead.
   property bool connected: false
+  property bool running: false
+  property bool connecting: false
+  property bool blocked: false
+  property bool blockedEnforced: false
+  property bool passwordless: false
+  property string blockedReason: ""
+  property string blockedSince: ""
+
   property string iface: ""
   property string ip: ""
   property string config: ""
@@ -22,10 +36,17 @@ Item {
   property string statusSummary: ""
   property string logTail: ""
   property string lastError: ""
+  property string controlError: ""
 
-  property bool busy: controlProc.running || statusProc.running || pickerProc.running
-  property int _optimisticState: -1 // -1 = follow real, 1 = connecting, 0 = disconnecting
-  readonly property bool active: _optimisticState === -1 ? connected : (_optimisticState === 1)
+  // Immediate UI feedback while a privileged connect/disconnect is running.
+  // The real state still comes from the script on the next poll.
+  property string pendingAction: ""
+  property double pendingSince: 0
+  property bool pendingSawRunning: false
+  property bool lastAttemptFailed: false
+
+  readonly property bool busy: controlProc.running || pickerProc.running
+  readonly property bool active: connected || connecting || pendingAction === "connect"
 
   function hasSavedAuthFor(path) {
     if (!authConfigs || authConfigs.length === 0) return false
@@ -39,22 +60,64 @@ Item {
   }
 
   function toggle() {
-    _optimisticState = connected ? 0 : 1
-    runControl(connected ? "disconnect" : "connect")
+    if (blocked) {
+      disconnectVpn()
+    } else if (connected || connecting || pendingAction === "connect") {
+      disconnectVpn()
+    } else {
+      connectVpn()
+    }
   }
 
   function connectVpn() {
-    _optimisticState = 1
+    if (controlProc.running) return
+    pendingAction = "connect"
+    pendingSince = Date.now()
+    pendingSawRunning = false
+    lastAttemptFailed = false
     runControl("connect")
   }
 
   function disconnectVpn() {
-    _optimisticState = 0
+    if (controlProc.running) return
+    pendingAction = "disconnect"
+    pendingSince = Date.now()
     runControl("disconnect")
   }
 
   function setConfig(path) {
+    if (!path) return
+    root.config = path
+    var parts = path.split("/")
+    root.configName = parts[parts.length - 1]
     runControl("set_config", [path])
+  }
+
+  // Remove a profile from the node list. The helper refuses anything that is
+  // not one of the profiles it lists, and trashes the file instead of deleting
+  // it outright when gio is available.
+  function removeProfile(path) {
+    if (!path) return
+    removeProfiles([path])
+  }
+
+  function removeProfiles(paths) {
+    if (!paths || paths.length === 0) return
+    var deletedMap = Object.create(null)
+    for (var i = 0; i < paths.length; i++) {
+      if (paths[i]) deletedMap[paths[i]] = true
+    }
+    var nextConfigs = []
+    for (var j = 0; j < root.configs.length; j++) {
+      if (!deletedMap[root.configs[j]]) nextConfigs.push(root.configs[j])
+    }
+    root.configs = nextConfigs
+    runControl("remove_profile", paths)
+  }
+
+  function setOrder(orderList) {
+    if (!orderList || orderList.length === 0) return
+    runControl("set_order", orderList)
   }
 
   function pickConfigFile() {
@@ -81,8 +144,20 @@ Item {
     runControl("clear_credentials", [root.config])
   }
 
+  property var _controlQueue: []
+
   function runControl(action, extraArgs, stdinData) {
-    if (controlProc.running) return
+    if (controlProc.running) {
+      var q = (root._controlQueue || []).slice()
+      q.push({ action: action, extraArgs: extraArgs || [], stdinData: stdinData || "" })
+      root._controlQueue = q
+      return
+    }
+    _runControlDirect(action, extraArgs, stdinData)
+  }
+
+  function _runControlDirect(action, extraArgs, stdinData) {
+    controlError = ""
     var cmd = [scriptPath, action]
     if (extraArgs && extraArgs.length > 0) {
       for (var i = 0; i < extraArgs.length; i++) {
@@ -94,10 +169,45 @@ Item {
     controlProc.running = true
   }
 
+  function settlePending() {
+    if (pendingAction === "") return
+    var elapsed = Date.now() - pendingSince
+    if (elapsed > 120000) {
+      pendingAction = ""
+      return
+    }
+    if (pendingAction === "connect") {
+      // A running process that disappears again has finished its attempt: the
+      // 9-second handshake timeout aborts it, or OpenVPN failed and exited.
+      if (connected || blocked) {
+        pendingAction = ""
+        return
+      }
+      if (pendingSawRunning && !running && !connecting) {
+        pendingAction = ""
+        lastAttemptFailed = true
+        return
+      }
+      // Before OpenVPN has appeared, allow for a slow pkexec prompt. After
+      // 15 seconds with nothing running, treat the action as failed.
+      if (elapsed > 15000 && !running && !connecting) pendingAction = ""
+    } else if (pendingAction === "disconnect") {
+      if (!running && !connecting && !blocked) pendingAction = ""
+    }
+  }
+
   function parseStatus(raw) {
     try {
       var data = JSON.parse(raw)
       root.connected = data.connected === true
+      root.running = data.running === true
+      root.connecting = data.connecting === true
+      if (root.pendingAction === "connect" && root.running) root.pendingSawRunning = true
+      root.blocked = data.blocked === true
+      root.blockedEnforced = data.blocked_enforced === true
+      root.passwordless = data.passwordless === true
+      root.blockedReason = String(data.blocked_reason || "")
+      root.blockedSince = String(data.blocked_since || "")
       root.iface = String(data.iface || "")
       root.ip = String(data.ip || "")
       root.config = String(data.config || "")
@@ -111,18 +221,18 @@ Item {
       root.statusSummary = String(data.status_summary || "")
       root.logTail = String(data.log_tail || "")
 
-      if (root._optimisticState !== -1 && root.connected === (root._optimisticState === 1)) {
-        root._optimisticState = -1
-      }
+      root.settlePending()
       root.lastError = ""
     } catch (e) {
-      console.warn("SimpleOpenVPN parseStatus error: " + e)
+      console.warn("EasyOpenVPN parseStatus error: " + e)
     }
   }
 
   Timer {
     id: pollTimer
-    interval: 2500
+    // Poll faster than the old 2.5 s so the UI reflects the real tunnel state
+    // (and an engaged kill switch) promptly.
+    interval: 1500
     running: true
     repeat: true
     onTriggered: root.refresh()
@@ -153,6 +263,12 @@ Item {
     id: controlProc
     property string stdinData: ""
     stdinEnabled: true
+    stderr: SplitParser {
+      onRead: function(line) {
+        var text = line.trim()
+        if (text !== "") root.controlError = text
+      }
+    }
     onStarted: {
       if (stdinData !== "") {
         write(stdinData)
@@ -161,7 +277,16 @@ Item {
     }
     onRunningChanged: {
       if (!running) {
-        Qt.callLater(function() { root.refresh() })
+        if (root._controlQueue && root._controlQueue.length > 0) {
+          var q = root._controlQueue.slice()
+          var next = q.shift()
+          root._controlQueue = q
+          Qt.callLater(function() {
+            root._runControlDirect(next.action, next.extraArgs, next.stdinData)
+          })
+        } else {
+          Qt.callLater(function() { root.refresh() })
+        }
       }
     }
   }

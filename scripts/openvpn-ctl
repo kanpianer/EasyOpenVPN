@@ -10,10 +10,34 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/openvpn-lib
 source "$script_dir/openvpn-lib"
-openvpn_init_state
 
 cmd=${1:-status}
 shift || true
+
+# Root mode is the root-owned copy under /usr/local/lib/simpleopenvpn being run
+# through pkexec. It is only allowed to perform the two privileged operations;
+# a passwordless polkit rule must never turn into a general root shell.
+openvpn_root_mode=0
+openvpn_runner=()
+if [[ ${EUID:-$(id -u)} -eq 0 && -n ${PKEXEC_UID:-} ]]; then
+  openvpn_root_mode=1
+  case "$cmd" in
+    connect|disconnect) ;;
+    *)
+      echo "EasyOpenVPN: the privileged helper only supports connect and disconnect" >&2
+      exit 1
+      ;;
+  esac
+else
+  openvpn_runner=(pkexec)
+fi
+
+# The unprivileged copy owns its state directory. The root copy must never
+# create or chown paths inside the user's home: a symlinked parent could
+# otherwise redirect that root write somewhere sensitive.
+if [[ $openvpn_root_mode -eq 0 ]]; then
+  openvpn_init_state
+fi
 
 case "$cmd" in
 status)
@@ -30,8 +54,8 @@ status)
 	    mapfile -t conf_list < <(
 	      {
 	        printf '%s\n' "${saved_profiles[@]}"
-	        find "$config_dir" -maxdepth 2 -type f \( -name '*.ovpn' -o -name '*.conf' \) 2>/dev/null
-	      } | grep -E '\.(ovpn|conf)$' | sort -u
+	        find "$config_dir" -maxdepth 2 -type f \( -name '*.ovpn' -o -name '*.conf' \) 2>/dev/null | sort
+	      } | grep -E '\.(ovpn|conf)$' | awk '!seen[$0]++'
 	    )
 	  else
 	    conf_list=("${saved_profiles[@]}")
@@ -53,6 +77,40 @@ status)
   is_running=false
   if openvpn_is_running; then
     is_running=true
+  fi
+
+  # "connected" means the tunnel is actually usable: the OpenVPN session
+  # reported "Initialization Sequence Completed", the tun device exists, and it
+  # has an IPv4 address. A running OpenVPN process that is still handshaking (or
+  # stuck retrying) is reported as "connecting" instead.
+  is_established=false
+  is_connecting=false
+  if [[ "$is_running" == true ]]; then
+    if openvpn_tunnel_established; then
+      is_established=true
+    else
+      is_connecting=true
+    fi
+  fi
+
+  killswitch=false
+  killswitch_enforced=false
+  killswitch_reason=""
+  killswitch_since=""
+  if openvpn_killswitch_active; then
+    killswitch=true
+    killswitch_reason=$(openvpn_killswitch_reason 2>/dev/null || true)
+    killswitch_since=$(openvpn_killswitch_since 2>/dev/null || true)
+    if openvpn_killswitch_enforced; then
+      killswitch_enforced=true
+    fi
+  fi
+
+  # Passwordless connect/disconnect is available only after the one-time
+  # setup-passwordless.sh installation.
+  passwordless=false
+  if openvpn_passwordless_available; then
+    passwordless=true
   fi
 
   iface=$(openvpn_tun_iface || true)
@@ -78,7 +136,14 @@ status)
   fi
 
   jq -n \
-    --argjson connected "$is_running" \
+    --argjson connected "$is_established" \
+    --argjson running "$is_running" \
+    --argjson connecting "$is_connecting" \
+    --argjson blocked "$killswitch" \
+    --argjson blocked_enforced "$killswitch_enforced" \
+    --argjson passwordless "$passwordless" \
+    --arg blocked_reason "${killswitch_reason:-}" \
+    --arg blocked_since "${killswitch_since:-}" \
     --arg iface "${iface:-}" \
     --arg ip "${ip_addr:-}" \
     --arg config "${config:-}" \
@@ -93,6 +158,13 @@ status)
     --arg log_tail "${log_tail:-}" \
     '{
       connected: $connected,
+      running: $running,
+      connecting: $connecting,
+      blocked: $blocked,
+      blocked_enforced: $blocked_enforced,
+      passwordless: $passwordless,
+      blocked_reason: $blocked_reason,
+      blocked_since: $blocked_since,
       iface: $iface,
       ip: $ip,
       config: $config,
@@ -109,6 +181,11 @@ status)
   ;;
 
 connect)
+  # If the one-time passwordless setup is installed, hand the operation to the
+  # root-owned copy. Its matching polkit rule authorizes it without a password.
+  if openvpn_can_delegate; then
+    exec pkexec "$openvpn_installed_ctl" connect
+  fi
   config=$(openvpn_selected_config 2>/dev/null || true)
   if [[ -z "$config" || ! -r "$config" ]]; then
     echo "No valid config selected" >&2
@@ -139,12 +216,16 @@ connect)
   #
   # OpenVPN reference:
   # https://openvpn.net/community-docs/community-articles/openvpn-2-6-manual.html
-  pkexec /usr/bin/python3 - "$openvpn_uid" "$openvpn_gid" "$config" "$auth_f" "$openvpn_runtime_dir" <<'PY'
+  "${openvpn_runner[@]}" /usr/bin/python3 - "$openvpn_uid" "$openvpn_gid" "$config" "$auth_f" "$openvpn_runtime_dir" <<'PY'
 import os
+import re
+import select
 import shlex
+import signal
 import stat
 import subprocess
 import sys
+import time
 
 uid = int(sys.argv[1])
 gid = int(sys.argv[2])
@@ -163,7 +244,7 @@ status_name = os.path.basename(status_path)
 log_name = os.path.basename(log_path)
 
 def fail(message):
-    print(f"SimpleOpenVPN: {message}", file=sys.stderr)
+    print(f"EasyOpenVPN: {message}", file=sys.stderr)
     raise SystemExit(1)
 
 def ensure_runtime_dir():
@@ -413,11 +494,482 @@ def validate_openvpn_config_fd(fd, label):
             config_file.close()
         os.lseek(fd, 0, os.SEEK_SET)
 
+# ---------------------------------------------------------------------------
+# Kill switch
+# ---------------------------------------------------------------------------
+#
+# The connection is supervised by a root helper that is forked off after
+# OpenVPN starts and outlives pkexec. It watches the OpenVPN process, the
+# tunnel device and the OpenVPN log. If a tunnel that had reached
+# "Initialization Sequence Completed" disappears, it immediately:
+#
+#   1. installs an nftables table that drops all input/forward/output traffic
+#      except loopback (no leaks outside the tunnel), and
+#   2. terminates OpenVPN, then
+#   3. records why in the runtime directory so the panel can explain the state.
+#
+# The rules are only removed by an explicit disconnect/restore action, which
+# also stops the guard, so a failed VPN can never silently fall back to the
+# physical network.
+
+KILLSWITCH_RULESET = """\
+add table inet simpleopenvpn
+add chain inet simpleopenvpn input { type filter hook input priority 0; policy drop; }
+add rule inet simpleopenvpn input iifname "lo" accept
+add chain inet simpleopenvpn output { type filter hook output priority 0; policy drop; }
+add rule inet simpleopenvpn output oifname "lo" accept
+add chain inet simpleopenvpn forward { type filter hook forward priority 0; policy drop; }
+"""
+
+LOSS_MARKERS = (
+    "connection reset, restarting",
+    "restart pause",
+    "sigusr1[",
+    "sigterm[",
+    "process exiting",
+    "auth_failed",
+    "inactivity timeout",
+    "tls error",
+    "tls key negotiation failed",
+    "verification failed",
+    "cipher negotiation failed",
+)
+
+# A connection attempt that has not reached "Initialization Sequence Completed"
+# within this many seconds is aborted. Because no tunnel was established, this
+# path stops OpenVPN but intentionally does NOT engage the kill switch.
+CONNECT_TIMEOUT = 9.0
+
+
+def trusted_root_executable(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(st.st_mode)
+        and st.st_uid == 0
+        and not (st.st_mode & 0o022)
+        and os.access(path, os.X_OK)
+    )
+
+
+def find_nft():
+    for candidate in ("/usr/bin/nft", "/usr/sbin/nft", "/sbin/nft", "/bin/nft"):
+        if trusted_root_executable(candidate):
+            return candidate
+    return None
+
+
+def nft_run(nft, args, data=None, timeout=15):
+    try:
+        return subprocess.run(
+            [nft] + args,
+            input=data,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _open_runtime_dir_fd(runtime_dir):
+    # Re-open and re-validate the runtime directory. Used by the guard child
+    # process after it has closed the fd inherited from the parent, and by
+    # engage_killswitch which may not have a live dir_fd in scope.
+    dir_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        dir_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        dir_flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(runtime_dir, dir_flags)
+    except OSError:
+        return None
+    st = os.fstat(fd)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) != 0o711:
+        os.close(fd)
+        return None
+    return fd
+
+
+def write_runtime_text(runtime_dir, name, text, mode):
+    # The runtime directory is root-owned and not writable by the desktop user,
+    # so a pre-planted symlink cannot redirect these root writes. Publish with
+    # rename relative to an already-verified dir_fd so the unprivileged status
+    # command never reads a partial file, and so the rename itself cannot be
+    # redirected by a concurrent directory replacement.
+    # SEC-2 fix: use dir_fd-relative open/rename consistently with secure_replace().
+    dir_fd = _open_runtime_dir_fd(runtime_dir)
+    if dir_fd is None:
+        raise OSError(f"cannot open runtime directory: {runtime_dir}")
+    tmp_name = f".{name}.tmp.{os.getpid()}"
+    write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        write_flags |= os.O_NOFOLLOW
+    fd = None
+    try:
+        fd = os.open(tmp_name, write_flags, mode, dir_fd=dir_fd)
+        os.fchown(fd, 0, 0)
+        os.fchmod(fd, mode)
+        view = memoryview(text.encode())
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        os.replace(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(tmp_name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        os.close(dir_fd)
+
+
+def wait_pidfd_exit(pidfd, timeout):
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if poller.poll(min(remaining, 0.1) * 1000):
+            return True
+
+
+def terminate_pid(pid, pidfd, timeout=3.0):
+    try:
+        signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    if wait_pidfd_exit(pidfd, timeout):
+        return
+    try:
+        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def process_comm(pid):
+    try:
+        with open(f"/proc/{pid}/comm", "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def stop_stale_guard(guard_pid_path):
+    # Disconnect and reconnect use the same marker: a guard that sees it exits
+    # without engaging the kill switch, even if OpenVPN dies while we stop it.
+    try:
+        with open(guard_pid_path, "r", encoding="utf-8") as handle:
+            pid_text = handle.read().strip()
+    except OSError:
+        return
+    if pid_text.isdecimal():
+        pid = int(pid_text)
+        try:
+            pidfd = os.pidfd_open(pid)
+        except OSError:
+            pidfd = None
+        if pidfd is not None:
+            try:
+                if process_comm(pid) == "openvpn-guard":
+                    try:
+                        signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    if not wait_pidfd_exit(pidfd, 2.0):
+                        try:
+                            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        wait_pidfd_exit(pidfd, 1.0)
+            finally:
+                os.close(pidfd)
+    try:
+        os.unlink(guard_pid_path)
+    except FileNotFoundError:
+        pass
+
+
+def iface_has_ipv4(name):
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # If the check itself failed, do not create a kill-switch event out of
+        # thin air; the process and log watchdogs still cover this session.
+        return True
+    return result.returncode == 0 and " inet " in result.stdout
+
+
+def find_tun_iface():
+    try:
+        names = sorted(os.listdir("/sys/class/net"))
+    except OSError:
+        return ""
+    for name in names:
+        if re.match(r"^(tun|tap)[0-9]+$", name) and iface_has_ipv4(name):
+            return name
+    return ""
+
+
+def set_process_name(name):
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(15, ctypes.c_char_p(name.encode()), 0, 0, 0)
+    except Exception:
+        pass
+
+
+def engage_killswitch(nft, killswitch_path, auth_path, openvpn_pid, pidfd, reason, stop_path=None):
+    if stop_path and os.path.exists(stop_path):
+        return
+    result = nft_run(nft, ["-f", "-"], KILLSWITCH_RULESET)
+    enforced = bool(result is not None and result.returncode == 0)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    try:
+        write_runtime_text(
+            os.path.dirname(killswitch_path),
+            os.path.basename(killswitch_path),
+            f"{reason}\n{stamp}\n{1 if enforced else 0}\n",
+            0o644,
+        )
+    except OSError:
+        pass
+    terminate_pid(openvpn_pid, pidfd)
+    try:
+        os.unlink(auth_path)
+    except FileNotFoundError:
+        pass
+
+
+def guard_loop(openvpn_pid, pidfd, nft, log_path, stop_path, killswitch_path, auth_path):
+    state = "waiting"
+    iface = ""
+    offset = 0
+    pending = ""
+    deadline = time.monotonic() + CONNECT_TIMEOUT
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+
+    while True:
+        if os.path.exists(stop_path):
+            return
+        if poller.poll(250):
+            if os.path.exists(stop_path):
+                return
+            if state == "up":
+                engage_killswitch(
+                    nft,
+                    killswitch_path,
+                    auth_path,
+                    openvpn_pid,
+                    pidfd,
+                    "OpenVPN process exited unexpectedly",
+                    stop_path,
+                )
+            return
+
+        data = ""
+        try:
+            size = os.path.getsize(log_path)
+            if size < offset:
+                offset = 0
+                pending = ""
+            with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(offset)
+                data = handle.read()
+                offset = handle.tell()
+        except OSError:
+            data = ""
+
+        # Only interpret complete lines: a read can land in the middle of a log
+        # line, and a marker such as "Initialization Sequence Completed" must not
+        # be missed just because it was split across two reads.
+        pending += data
+        if "\n" in pending:
+            lines = pending.split("\n")
+            pending = lines.pop()
+        else:
+            lines = []
+        if len(pending) > 65536:
+            pending = pending[-65536:]
+
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            low = line.lower()
+            # OpenVPN 2.7 logs the device twice: "TUN/TAP device tun0 opened"
+            # and "tun/tap device [tun0] opened". Strip brackets and whitespace
+            # so the interface check does not look for a non-existent "[tun0]" device.
+            opened = re.search(r"(?:TUN/TAP|DCO) device\s+(\S+)\s+opened", line, re.IGNORECASE)
+            if opened:
+                dev_name = opened.group(1).strip("[] \t\r\n'\"")
+                if dev_name:
+                    iface = dev_name
+                continue
+            if state == "waiting":
+                if "initialization sequence completed" in low:
+                    state = "up"
+                    if not iface or not os.path.exists(os.path.join("/sys/class/net", iface)):
+                        iface = find_tun_iface()
+                continue
+            for marker in LOSS_MARKERS:
+                if marker in low:
+                    if os.path.exists(stop_path):
+                        return
+                    engage_killswitch(
+                        nft,
+                        killswitch_path,
+                        auth_path,
+                        openvpn_pid,
+                        pidfd,
+                        f"VPN server connection lost: {line[:160]}",
+                        stop_path,
+                    )
+                    return
+
+        now = time.monotonic()
+        if state == "waiting":
+            if now > deadline:
+                # The handshake never completed, so there is no tunnel to
+                # protect and no reason to cut the whole network.
+                terminate_pid(openvpn_pid, pidfd)
+                return
+            continue
+
+        if iface and not os.path.exists(os.path.join("/sys/class/net", iface)):
+            # A reconnect can bring the tunnel back on a different tunN device.
+            # Give a brief grace period before checking other interfaces, and only
+            # call it a loss when no tunnel holding an IPv4 address remains.
+            time.sleep(0.5)
+            current = find_tun_iface()
+            if current:
+                iface = current
+            elif not os.path.exists(os.path.join("/sys/class/net", iface)):
+                if os.path.exists(stop_path):
+                    return
+                engage_killswitch(
+                    nft,
+                    killswitch_path,
+                    auth_path,
+                    openvpn_pid,
+                    pidfd,
+                    f"Tunnel interface {iface} disappeared",
+                    stop_path,
+                )
+                return
+
+
+def remove_own_pid_file(guard_pid_path):
+    try:
+        with open(guard_pid_path, "r", encoding="utf-8") as handle:
+            current = handle.read().strip()
+    except OSError:
+        return
+    if current != str(os.getpid()):
+        return
+    try:
+        os.unlink(guard_pid_path)
+    except FileNotFoundError:
+        pass
+
+
+def spawn_guard(runtime_fd, openvpn_pid, nft, log_path, stop_path, killswitch_path, auth_path, guard_pid_path):
+    try:
+        child = os.fork()
+    except OSError as exc:
+        # Do not leave an unsupervised tunnel behind if the guard cannot start.
+        try:
+            os.kill(openvpn_pid, signal.SIGTERM)
+        except OSError:
+            pass
+        fail(f"cannot start the kill switch guard: {exc}")
+    if child != 0:
+        return
+
+    # Detach from pkexec before doing any long-lived work.
+    try:
+        try:
+            os.close(runtime_fd)
+        except OSError:
+            pass
+        os.setsid()
+        devnull = os.open(os.devnull, os.O_RDWR)
+        for target in (0, 1, 2):
+            os.dup2(devnull, target)
+        if devnull > 2:
+            os.close(devnull)
+        set_process_name("openvpn-guard")
+        # The guard is still useful without its pid file: disconnect also
+        # signals an intentional stop through the stop marker.
+        try:
+            write_runtime_text(os.path.dirname(guard_pid_path), os.path.basename(guard_pid_path), f"{os.getpid()}\n", 0o600)
+        except OSError:
+            pass
+        pidfd = os.pidfd_open(openvpn_pid)
+        try:
+            guard_loop(openvpn_pid, pidfd, nft, log_path, stop_path, killswitch_path, auth_path)
+        finally:
+            os.close(pidfd)
+    except Exception:
+        pass
+    finally:
+        remove_own_pid_file(guard_pid_path)
+        os._exit(0)
+
+
 runtime_fd = ensure_runtime_dir()
 validate_root_executable(openvpn_bin)
+nft = find_nft()
+if nft is None:
+    os.close(runtime_fd)
+    fail("nftables (nft) is required for the kill switch")
+
 config_fd = open_user_file(config_path, True)
 auth_fd = open_user_file(auth_source, False)
 validate_openvpn_config_fd(config_fd, config_path)
+
+guard_pid_path = os.path.join(runtime_dir, "guard.pid")
+killswitch_path = os.path.join(runtime_dir, "killswitch")
+stop_path = os.path.join(runtime_dir, "stop-requested")
+
+# Connecting is an explicit user action, so clear any kill switch left over from
+# a previous session before launching a new tunnel.
+secure_replace(runtime_fd, "stop-requested", b"1\n", 0o600, 0, 0)
+stop_stale_guard(guard_pid_path)
+nft_run(nft, ["delete", "table", "inet", "simpleopenvpn"])
+try:
+    os.unlink("killswitch", dir_fd=runtime_fd)
+except FileNotFoundError:
+    pass
+try:
+    os.unlink("guard.pid", dir_fd=runtime_fd)
+except FileNotFoundError:
+    pass
+try:
+    os.unlink("stop-requested", dir_fd=runtime_fd)
+except FileNotFoundError:
+    pass
 
 secure_replace(runtime_fd, log_name, b"", 0o600, uid, gid)
 secure_replace(runtime_fd, status_name, b"", 0o600, uid, gid)
@@ -457,7 +1009,7 @@ if not stat.S_ISREG(log_st.st_mode) or log_st.st_uid != uid or stat.S_IMODE(log_
     os.close(log_fd)
     fail(f"unsafe log file: {log_path}")
 try:
-    subprocess.Popen(
+    openvpn_proc = subprocess.Popen(
         args,
         cwd="/",
         env={
@@ -472,24 +1024,47 @@ try:
 finally:
     os.close(log_fd)
     os.close(config_fd)
-    os.close(runtime_fd)
+
+spawn_guard(
+    runtime_fd,
+    openvpn_proc.pid,
+    nft,
+    log_path,
+    stop_path,
+    killswitch_path,
+    auth_path,
+    guard_pid_path,
+)
+
+os.close(runtime_fd)
 PY
   echo "connected"
   ;;
 
 disconnect)
-  if ! openvpn_is_running; then
+  # Disconnecting is also the "restore the network" action: the kill switch
+  # needs root to be torn down even when OpenVPN is already gone, so only skip
+  # the privileged helper when there is genuinely nothing to clean up.
+  if ! openvpn_is_running && [[ ! -e "$openvpn_killswitch_file" ]] && [[ ! -e "$openvpn_guard_pid_file" ]]; then
     echo "Not running"
     exit 0
   fi
-  pids=$(openvpn_matching_pids)
+  if openvpn_can_delegate; then
+    exec pkexec "$openvpn_installed_ctl" disconnect
+  fi
+  pids=$(openvpn_matching_pids || true)
+  pid_args=()
   if [[ -n "$pids" ]]; then
     mapfile -t pid_args <<<"$pids"
-    pkexec /usr/bin/python3 - "$openvpn_runtime_dir" "$openvpn_pid_file" "$openvpn_auth_file" "${pid_args[@]}" <<'PY'
+  fi
+  "${openvpn_runner[@]}" /usr/bin/python3 - "$openvpn_runtime_dir" "$openvpn_pid_file" "$openvpn_auth_file" "${pid_args[@]}" <<'PY'
 import os
+import select
 import signal
 import stat
+import subprocess
 import sys
+import time
 
 runtime_dir = sys.argv[1]
 pid_path = sys.argv[2]
@@ -498,7 +1073,7 @@ pids = sys.argv[4:]
 auth_name = os.path.basename(auth_path)
 
 def fail(message):
-    print(f"SimpleOpenVPN: {message}", file=sys.stderr)
+    print(f"EasyOpenVPN: {message}", file=sys.stderr)
     raise SystemExit(1)
 
 if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
@@ -564,8 +1139,103 @@ def open_target_openvpn_pidfd(pid):
     os.close(pidfd)
     return None
 
+def wait_pidfd_exit(pidfd, timeout):
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if poller.poll(min(remaining, 0.1) * 1000):
+            return True
+
+def process_comm(pid):
+    try:
+        with open(f"/proc/{pid}/comm", "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+def trusted_root_executable(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(st.st_mode)
+        and st.st_uid == 0
+        and not (st.st_mode & 0o022)
+        and os.access(path, os.X_OK)
+    )
+
+def find_nft():
+    for candidate in ("/usr/bin/nft", "/usr/sbin/nft", "/sbin/nft", "/bin/nft"):
+        if trusted_root_executable(candidate):
+            return candidate
+    return None
+
+def nft_run(nft, args):
+    try:
+        return subprocess.run(
+            [nft] + args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+def stop_guard():
+    guard_pid_path = os.path.join(runtime_dir, "guard.pid")
+    try:
+        with open(guard_pid_path, "r", encoding="utf-8") as handle:
+            pid_text = handle.read().strip()
+    except OSError:
+        return
+    if pid_text.isdecimal():
+        pid = int(pid_text)
+        try:
+            pidfd = os.pidfd_open(pid)
+        except OSError:
+            pidfd = None
+        if pidfd is not None:
+            try:
+                if process_comm(pid) == "openvpn-guard":
+                    try:
+                        signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    if not wait_pidfd_exit(pidfd, 2.0):
+                        try:
+                            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        wait_pidfd_exit(pidfd, 1.0)
+            finally:
+                os.close(pidfd)
+    try:
+        os.unlink(guard_pid_path)
+    except FileNotFoundError:
+        pass
+
 runtime_fd = ensure_runtime_dir()
 try:
+    # Announce an intentional stop before OpenVPN goes away. The guard checks
+    # this marker every 250 ms and also right before it would block the network.
+    marker_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        marker_flags |= os.O_NOFOLLOW
+    marker_fd = os.open("stop-requested", marker_flags, 0o600, dir_fd=runtime_fd)
+    try:
+        os.write(marker_fd, b"1\n")
+        os.fsync(marker_fd)
+    finally:
+        os.close(marker_fd)
+
+    stop_guard()
+
     for pid in pids:
         pidfd = open_target_openvpn_pidfd(pid)
         if pidfd is not None:
@@ -575,8 +1245,18 @@ try:
                 pass
             finally:
                 os.close(pidfd)
+
+    nft = find_nft()
+    if nft is not None:
+        nft_run(nft, ["delete", "table", "inet", "simpleopenvpn"])
+
     if auth_name != "auth-user-pass":
         fail("unexpected auth file name")
+    for name in ("killswitch", "guard.pid", "stop-requested"):
+        try:
+            os.unlink(name, dir_fd=runtime_fd)
+        except FileNotFoundError:
+            pass
     try:
         os.unlink(auth_name, dir_fd=runtime_fd)
     except FileNotFoundError:
@@ -584,7 +1264,6 @@ try:
 finally:
     os.close(runtime_fd)
 PY
-  fi
   echo "disconnected"
   ;;
 
@@ -607,6 +1286,80 @@ set_config)
 	  openvpn_remember_profile "$new_conf"
 	  echo "ok"
 	  ;;
+
+set_order|save_order)
+  new_order=()
+  if [[ $# -gt 0 ]]; then
+    new_order=("$@")
+  else
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && new_order+=("$line")
+    done
+  fi
+  if ((${#new_order[@]} > 0)); then
+    openvpn_init_state
+    printf '%s\n' "${new_order[@]}" | awk '!seen[$0]++' | openvpn_atomic_publish "$openvpn_profiles_file"
+  fi
+  echo "ok"
+  ;;
+
+remove_profile|remove_profiles)
+  # Deleting nodes removes .ovpn files from the user's profile list.
+  # Accepts one or multiple paths. Trashes the files when gio is available.
+  targets=("$@")
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    echo "Usage: remove_profile <path> [path...]" >&2
+    exit 1
+  fi
+  for target in "${targets[@]}"; do
+    [[ -z "$target" ]] && continue
+    if [[ -L $target || ! -f $target ]]; then
+      continue
+    fi
+    real_target=$(realpath -e -- "$target" 2>/dev/null || true)
+    [[ -z "$real_target" || ! -r "$real_target" ]] && continue
+    case "$real_target" in
+      *.ovpn|*.conf) ;;
+      *) continue ;;
+    esac
+    if ! openvpn_all_profiles | grep -Fxq -- "$real_target"; then
+      continue
+    fi
+
+    # Forget the remembered entry and any stored credentials for the profile.
+    if [[ -r "$openvpn_profiles_file" ]]; then
+      grep -Fxv -e "$target" -e "$real_target" "$openvpn_profiles_file" 2>/dev/null |
+        awk '!seen[$0]++' | openvpn_atomic_publish "$openvpn_profiles_file" || true
+    fi
+    auth_f=$(openvpn_profile_auth_file "$real_target" 2>/dev/null || true)
+    [[ -n "$auth_f" ]] && rm -f -- "$auth_f"
+
+    if command -v gio &>/dev/null && gio trash -- "$real_target" 2>/dev/null; then
+      :
+    else
+      rm -f -- "$real_target"
+    fi
+  done
+
+  # Move the selection to the next remaining node when the deleted one was
+  # selected, so the panel never points at a file that no longer exists.
+  current_selected=$(openvpn_selected_config 2>/dev/null || true)
+  if [[ -n "$current_selected" && ! -r "$current_selected" ]]; then
+    next=""
+    while IFS= read -r candidate; do
+      [[ -n "$candidate" && -r "$candidate" ]] || continue
+      next="$candidate"
+      break
+    done < <(openvpn_all_profiles)
+    if [[ -n "$next" ]]; then
+      openvpn_secure_write_line "$openvpn_config_file" "$next"
+      openvpn_secure_write_line "$openvpn_config_dir_file" "$(dirname -- "$next")"
+    else
+      rm -f -- "$openvpn_config_file" "$openvpn_config_dir_file"
+    fi
+  fi
+  echo "ok"
+  ;;
 
 set_config_dir)
   new_dir=${1:?Usage: set_config_dir <path>}
