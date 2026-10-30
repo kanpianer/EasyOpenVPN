@@ -54,25 +54,18 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
 
 EasyOpenVPN is designed for Omarchy and its Quickshell-based desktop shell.
 
-Runtime dependencies:
-- `openvpn`
-- `jq`
-- `zenity` (or `omarchy-file-select`)
-- `python3`
-- `nftables` (`nft`, required for the kill switch)
-- `pkexec` (polkit)
-- Standard core utilities: `ip` (iproute2), `ps`, `awk`, `grep`, `sed`
+All runtime dependencies (`openvpn`, `jq`, `zenity`, `python`, `nftables`) are included directly in the integrated installation command below, so you do not need to run a separate command for requirements.
 
 ---
 
 ## Installation
 
-### Via Omarchy Plugin Manager (Recommended)
+### Via Omarchy CLI (Recommended)
 
-Add and enable the plugin:
+Run the integrated command to install all required packages, add the plugin, and enable it in one step:
 
 ```sh
-omarchy plugin add https://github.com/kanpianer/EasyOpenVPN.git --enable
+omarchy pkg add openvpn jq zenity python nftables && omarchy plugin add https://github.com/kanpianer/EasyOpenVPN.git --enable
 ```
 
 Place the widget in the desired bar section (e.g. right side):
@@ -83,7 +76,7 @@ omarchy bar move io.github.kanpianer.easy-openvpn --section right
 
 ### From Local Source
 
-You can also install from a local checkout:
+Clone the repository and run the installer, which automatically handles dependencies and registers the plugin:
 
 ```sh
 ./install.sh
