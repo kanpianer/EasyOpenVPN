@@ -276,7 +276,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
+    contentWidth: panel.fittedContentWidth(Style.space(Math.round(380 * 10 / 9)))
     contentHeight: panel.fittedContentHeight(headerCol.implicitHeight + scrollCol.implicitHeight + Style.spacing.panelPadding * 2 + Style.space(16), Style.space(560))
 
     PanelKeyCatcher {
@@ -563,6 +563,12 @@ Panel {
                 }
               }
             }
+          }
+
+          PanelSeparator {
+            visible: root.displayConfigs.length > 0
+            width: parent.width
+            foreground: root.foreground
           }
 
           Column {
@@ -878,14 +884,15 @@ Panel {
     }
   }
 
-  // Version label horizontally centered in the bottom black margin
+  // Version label horizontally centered in the middle of the bottom black margin
   Item {
     id: versionBadge
-    anchors.top: panelContent.bottom
-    anchors.bottom: parent.bottom
+    anchors.verticalCenter: parent.bottom
     anchors.horizontalCenter: parent.horizontalCenter
     implicitWidth: verText.implicitWidth + Style.space(16)
+    implicitHeight: verText.implicitHeight + Style.space(8)
     width: implicitWidth
+    height: implicitHeight
     z: 20
 
     Text {
