@@ -411,18 +411,10 @@ openvpn_known_profiles() {
   done < "$openvpn_profiles_file"
 }
 
-# Every profile the panel can list: remembered profiles plus the OpenVPN files
-# found in the selected config directory. Sorted and de-duplicated so callers
-# can treat it as the canonical node list.
+# Every profile the panel can list: only explicitly imported profiles.
+# Sorted and de-duplicated so callers can treat it as the canonical node list.
 openvpn_all_profiles() {
-  local dir=""
-  dir=$(openvpn_selected_dir 2>/dev/null || true)
-  {
-    openvpn_known_profiles
-    if [[ -n "$dir" && -d "$dir" ]]; then
-      find "$dir" -maxdepth 2 -type f \( -name '*.ovpn' -o -name '*.conf' \) 2>/dev/null | sort
-    fi
-  } | grep -E '\.(ovpn|conf)$' | awk '!seen[$0]++'
+  openvpn_known_profiles | grep -E '\.(ovpn|conf)$' | awk '!seen[$0]++'
 }
 
 openvpn_username() {

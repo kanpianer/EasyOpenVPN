@@ -1411,7 +1411,6 @@ pick_file|add_profile)
     openvpn_remember_profiles "${found_files[@]}"
 
     first_file="${found_files[0]}"
-    openvpn_secure_write_line "$openvpn_config_dir_file" "$(dirname -- "$first_file")"
 
     current_selected=$(openvpn_selected_config 2>/dev/null || true)
     if [[ -z "$current_selected" || ! -r "$current_selected" ]]; then

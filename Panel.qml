@@ -277,7 +277,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(headerCol.implicitHeight + scrollCol.implicitHeight + Style.spacing.panelPadding * 2 + Style.space(16), Style.space(560))
+    contentHeight: panel.fittedContentHeight(headerCol.implicitHeight + scrollCol.implicitHeight + Style.spacing.panelPadding * 2 + Style.space(20) + verText.implicitHeight, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -289,13 +289,12 @@ Panel {
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
-      // Version label in the top-right corner without affecting panel layout or other elements
+      // Version label at the bottom center of the panel
       Item {
         id: versionBadge
-        anchors.top: parent.top
-        anchors.right: parent.right
-        anchors.topMargin: Style.space(6)
-        anchors.rightMargin: Style.space(12)
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Style.space(6)
+        anchors.horizontalCenter: parent.horizontalCenter
         implicitWidth: verText.implicitWidth + Style.space(8)
         implicitHeight: verText.implicitHeight + Style.space(4)
         width: implicitWidth
@@ -305,7 +304,7 @@ Panel {
         Text {
           id: verText
           anchors.centerIn: parent
-          text: "0.1"
+          text: "v 0.1"
           color: versionMouse.containsMouse ? root.foreground : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -327,8 +326,14 @@ Panel {
 
       Item {
         id: panelContent
-        anchors.fill: parent
-        anchors.margins: Style.spacing.panelPadding
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: versionBadge.top
+        anchors.topMargin: Style.spacing.panelPadding
+        anchors.leftMargin: Style.spacing.panelPadding
+        anchors.rightMargin: Style.spacing.panelPadding
+        anchors.bottomMargin: Style.space(4)
 
         // --------------------------------------------------- FIXED TOP HEADER
         Column {
