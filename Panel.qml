@@ -339,8 +339,17 @@ Panel {
                 // Stay clickable while the tunnel is handshaking so the switch
                 // can cancel the attempt; only a running control process blocks it.
                 busy: service.busy
+                cursorRing: false
                 foreground: hero.foreground
                 onToggled: service.toggle()
+
+                BorderSurface {
+                  anchors.fill: parent
+                  visible: connectionSwitch.containsMouse
+                  color: "transparent"
+                  radius: (Style.cornerRadius > 0) ? height / 2 : 0
+                  borderSpec: Border.controlSpec("hover-cursor", root.foreground, Color.accent)
+                }
 
                 PanelToolTip {
                   visible: connectionSwitch.containsMouse
@@ -565,16 +574,11 @@ Panel {
             }
           }
 
-          PanelSeparator {
-            visible: root.displayConfigs.length > 0
-            width: parent.width
-            foreground: root.foreground
-          }
-
           Column {
             id: configsColumn
             width: parent.width
             spacing: Style.space(6)
+            topPadding: root.displayConfigs.length > 0 ? Style.space(6) : 0
 
             Repeater {
               id: configsRepeater
