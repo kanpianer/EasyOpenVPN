@@ -5,7 +5,7 @@
   "version": "0.1",
   "author": "kanpianer",
   "license": "MIT",
-  "description": "Easy OpenVPN toggle switch with accurate connection state, kill switch, optional passwordless connect, profile selector, credentials manager, and live stats in the Omarchy bar.",
+  "description": "Easy OpenVPN toggle switch with accurate connection state, kill switch, optional passwordless connect, profile selector, credentials manager, and log viewer in the Omarchy bar.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "EasyOpenVPN",
-    "description": "Toggle OpenVPN, see the real tunnel state, block the network if the VPN drops, switch profiles, manage credentials, and view stats.",
+    "description": "Toggle OpenVPN, monitor connection state, protect with kill switch, manage profiles, and view recent logs.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right"

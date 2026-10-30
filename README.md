@@ -1,10 +1,10 @@
 # EasyOpenVPN
 
 <p align="center">
-  <img src="preview.png" alt="EasyOpenVPN Panel" width="380" />
+  <img src="preview.png" alt="EasyOpenVPN Panel" width="422" />
 </p>
 
-EasyOpenVPN is a lightweight, secure Omarchy bar widget for managing and running OpenVPN connections directly from the Omarchy desktop shell. It provides a compact status icon, a full-featured profile manager, saved credentials, connect/disconnect controls, automatic kill-switch protection, and recent OpenVPN log output.
+EasyOpenVPN is a lightweight, secure Omarchy bar widget for managing and running OpenVPN connections directly from the Omarchy desktop shell. It provides a compact status icon, a full-featured profile manager, saved credentials, direct connect/disconnect controls, automatic kill-switch protection, and recent OpenVPN log output.
 
 The plugin is intentionally focused: it does not require NetworkManager VPN plugins or systemd services. It is built for users who already have `.ovpn` or `.conf` files and want a streamlined, theme-aware bar widget with reliable connection status and instant leak protection.
 
@@ -14,7 +14,7 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
 
 - **Profile Management**:
   - Add `.ovpn` or `.conf` configuration files with multi-selection file picker (**Add Profile**).
-  - Select a folder containing configuration files to import all of them at once (**Open Folder**).
+  - Select a folder to batch import all OpenVPN configuration files contained inside (**Open Folder**).
   - **Drag-and-Drop Reordering**: Press and hold any profile to drag and reorder; custom order is automatically saved across restarts.
   - **Multi-Selection & Batch Delete**: Select individual profiles with checkboxes or click **Select All**, then remove them with **Delete**.
   - **Quick Single-Profile Delete**: Per-profile trash icon with two-step click-to-confirm safety.
@@ -23,7 +23,7 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
 - **Profile-Specific Credentials**:
   - Store VPN username and password per configuration file (**Save for Profile**).
   - Credentials automatically switch when selecting different profiles.
-  - Credentials files are stored with restricted private permissions.
+  - Credentials files are stored with restricted private permissions (`0600`).
 
 - **Accurate Connection State**:
   - Distinguishes between **Connecting…** (during TLS handshake) and **Connected**.
@@ -37,13 +37,16 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
   - In-panel alert: **Kill switch • network blocked**, reporting the failure reason and providing a **Restore Network** button.
   - Unblocking only happens by explicit user action; network is never silently restored behind the scenes.
 
-- **Optional Passwordless Mode**:
-  - Run the included one-time setup (`sudo ./setup-passwordless.sh`) to authorize a locked-down control script via Polkit.
-  - Replaces system password dialogs with a quick in-panel confirmation card.
+- **Seamless Direct & Passwordless Connect**:
+  - Connect and disconnect directly via the toggle switch in the panel header without repeated password prompts once configured.
+  - Right-clicking the status bar icon disconnects immediately.
+  - Optional one-time helper (`sudo ./setup-passwordless.sh`) authorizes a restricted Polkit rule.
 
 - **Diagnostics & Theming**:
   - Embedded monospace log view showing recent OpenVPN output directly in the panel.
   - Themed OpenVPN icon in both the status bar and panel, automatically matching your active Omarchy theme colors.
+  - Polished layout with hover highlighting and balanced spacing.
+  - Centered version indicator (`v 0.1`) at the bottom margin linking directly to the project repository.
 
 ---
 
@@ -51,25 +54,20 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
 
 EasyOpenVPN is designed for Omarchy and its Quickshell-based desktop shell.
 
-Install the required packages before enabling the plugin:
-
-```sh
-omarchy pkg add openvpn jq zenity python nftables
-```
-
-The plugin also uses standard command-line tools included with Omarchy and Arch Linux:
-- `pkexec`
-- `ip` (iproute2)
-- `nft` (nftables, required for the kill switch)
-- `ps`, `find`, `awk`, `grep`, `sed`
+Runtime dependencies:
+- `openvpn`
+- `jq`
+- `zenity` (or `omarchy-file-select`)
 - `python3`
-- GNU coreutils
+- `nftables` (`nft`, required for the kill switch)
+- `pkexec` (polkit)
+- Standard core utilities: `ip` (iproute2), `ps`, `awk`, `grep`, `sed`
 
 ---
 
 ## Installation
 
-### Via Omarchy Plugin Manager
+### Via Omarchy Plugin Manager (Recommended)
 
 Add and enable the plugin:
 
@@ -100,14 +98,14 @@ You can also install from a local checkout:
 3. **Reorder Profiles**: Long-press (press and hold) a profile row and drag it to your preferred position in the list.
 4. **Manage Profiles**: Use the checkboxes to select profiles and click **Delete** (or click the individual trash icon) to remove profiles.
 5. **Set Credentials**: If your VPN requires authentication, enter your username and password, then click **Save for Profile**.
-6. **Connect**: Toggle the switch in the panel header. A confirmation card will appear. Confirm to establish the connection.
-7. **Quick Control**: Right-clicking the bar icon disconnects immediately. If passwordless mode is active, right-clicking opens the confirmation card for quick connection.
+6. **Connect**: Toggle the switch in the panel header to connect directly. Toggle it again to disconnect.
+7. **Quick Control**: Right-clicking the bar icon disconnects immediately.
 
 ---
 
-## Passwordless Connect (Optional)
+## Passwordless Connect (Recommended)
 
-By default, connecting uses `pkexec`, prompting for your account password via the Omarchy Polkit dialog. To replace this prompt with the streamlined in-panel confirmation card, run the one-time helper script in a terminal:
+By default, connecting uses `pkexec`, prompting for your account password via the Omarchy Polkit dialog. To connect and disconnect directly from the panel toggle without entering your password, run the one-time helper script in a terminal:
 
 ```sh
 sudo ./setup-passwordless.sh
@@ -175,7 +173,7 @@ For reference when submitting to the [Omarchy Plugin Marketplace](https://plugin
 - **ID**: `io.github.kanpianer.easy-openvpn`
 - **Repository**: `https://github.com/kanpianer/EasyOpenVPN`
 - **Category**: `Widgets`
-- **Tags**: `vpn`, `bar`, `security`
+- **Tags**: `VPN`, `Bar`, `Quickshell`
 - **Preview Asset**: `preview.png`
 
 ---

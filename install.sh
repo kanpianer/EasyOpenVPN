@@ -3,7 +3,6 @@ set -euo pipefail
 
 repo_url="${SIMPLEOPENVPN_REPO_URL:-https://github.com/kanpianer/EasyOpenVPN.git}"
 
-omarchy pkg add openvpn jq zenity python nftables
 omarchy plugin add "$repo_url" --enable --yes
 
 echo "EasyOpenVPN installed."
