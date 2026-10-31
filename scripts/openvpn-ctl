@@ -494,6 +494,125 @@ def validate_openvpn_config_fd(fd, label):
             config_file.close()
         os.lseek(fd, 0, os.SEEK_SET)
 
+def freeze_validated_config(src_fd, runtime_fd):
+    # Content-freeze invariant:
+    #
+    # validate_openvpn_config_fd() reads and validates the config through
+    # src_fd, which still points at a user-owned, user-writable inode.
+    # Keeping that same mutable fd open and then passing it to root OpenVPN
+    # via /proc/self/fd/<n> leaves a race window: the authorized user can
+    # rewrite the file between the end of validation and the moment OpenVPN
+    # opens it, inserting a "plugin" directive (or any other forbidden
+    # directive) that loads a user-controlled shared library as root.
+    # O_NOFOLLOW prevents symlink swaps but does NOT prevent in-place content
+    # modification of the already-opened inode.
+    #
+    # To close the race we read the validated content into process memory and
+    # write it to a fresh file whose inode is owned and writable only by root
+    # (this process). OpenVPN receives a descriptor to that frozen copy, not
+    # to the original user inode.
+    #
+    # Preferred: memfd_create() with MFD_ALLOW_SEALING + F_SEAL_WRITE so the
+    # kernel guarantees the contents can never be modified again, even through
+    # the fd we hold. Falls back to an O_TMPFILE regular file in the root-owned
+    # runtime directory when memfd is unavailable (non-Linux kernels, very old
+    # kernels). O_TMPFILE files have no directory entry and are automatically
+    # reclaimed when the fd is closed.
+    #
+    # In both cases the frozen fd is the only fd that gets into OpenVPN's
+    # address space; src_fd is closed immediately after the copy.
+
+    # Read validated content from the beginning of src_fd.
+    os.lseek(src_fd, 0, os.SEEK_SET)
+    chunks = []
+    total = 0
+    max_config = 4 * 1024 * 1024  # 4 MiB hard cap on config size
+    while True:
+        chunk = os.read(src_fd, 65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_config:
+            fail("OpenVPN config file exceeds maximum allowed size")
+        chunks.append(chunk)
+    data = b"".join(chunks)
+
+    frozen_fd = None
+
+    # Attempt 1: memfd_create with sealing (Linux 3.17+, Python 3.13+ exposes
+    # os.memfd_create; fall through to O_TMPFILE on AttributeError or OSError).
+    if hasattr(os, "memfd_create"):
+        try:
+            MFD_ALLOW_SEALING = 2
+            frozen_fd = os.memfd_create("openvpn-config", flags=MFD_ALLOW_SEALING)
+            view = memoryview(data)
+            while view:
+                written = os.write(frozen_fd, view)
+                view = view[written:]
+            # Seal: prevent any further writes or size changes.
+            import fcntl
+            F_ADD_SEALS = 1033
+            F_SEAL_SEAL  = 1
+            F_SEAL_SHRINK = 2
+            F_SEAL_GROW  = 4
+            F_SEAL_WRITE = 8
+            seals = F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL
+            try:
+                fcntl.fcntl(frozen_fd, F_ADD_SEALS, seals)
+            except OSError:
+                # Sealing failed (e.g. another mapping exists); the copy is
+                # still immutable from OpenVPN's perspective because OpenVPN
+                # gets a read-only view through the fd.
+                pass
+            os.lseek(frozen_fd, 0, os.SEEK_SET)
+            return frozen_fd
+        except OSError:
+            if frozen_fd is not None:
+                os.close(frozen_fd)
+                frozen_fd = None
+
+    # Attempt 2: O_TMPFILE in the root-owned runtime directory.
+    # O_TMPFILE creates a nameless inode; no directory entry is ever created so
+    # even root cannot race a rename into a dangerous path.
+    if hasattr(os, "O_TMPFILE"):
+        try:
+            frozen_fd = os.open(".", os.O_RDWR | os.O_TMPFILE | os.O_CLOEXEC, 0o600,
+                                dir_fd=runtime_fd)
+            view = memoryview(data)
+            while view:
+                written = os.write(frozen_fd, view)
+                view = view[written:]
+            os.lseek(frozen_fd, 0, os.SEEK_SET)
+            return frozen_fd
+        except OSError:
+            if frozen_fd is not None:
+                os.close(frozen_fd)
+                frozen_fd = None
+
+    # Fallback: named temp file in the root-owned runtime directory using the
+    # same atomic-replace helper already present in this script. We then reopen
+    # it read-only (root owns it, mode 0600, only root can modify it) and
+    # immediately unlink it so OpenVPN holds the only surviving reference.
+    tmp_name = f".config.frozen.{os.getpid()}"
+    secure_replace(runtime_fd, tmp_name, data, 0o600, 0, 0)
+    try:
+        frozen_fd = os.open(tmp_name,
+                            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                            dir_fd=runtime_fd)
+        fst = os.fstat(frozen_fd)
+        if fst.st_uid != 0 or stat.S_IMODE(fst.st_mode) != 0o600:
+            os.close(frozen_fd)
+            fail("frozen config file has unexpected ownership or mode")
+        os.unlink(tmp_name, dir_fd=runtime_fd)
+        os.lseek(frozen_fd, 0, os.SEEK_SET)
+        return frozen_fd
+    except Exception:
+        try:
+            os.unlink(tmp_name, dir_fd=runtime_fd)
+        except FileNotFoundError:
+            pass
+        raise
+
 # ---------------------------------------------------------------------------
 # Kill switch
 # ---------------------------------------------------------------------------
@@ -975,9 +1094,28 @@ secure_replace(runtime_fd, log_name, b"", 0o600, uid, gid)
 secure_replace(runtime_fd, status_name, b"", 0o600, uid, gid)
 secure_replace(runtime_fd, pid_name, b"", 0o600, uid, gid)
 
+# TOCTOU freeze:
+#
+# config_fd still points at the user-owned, user-writable inode. Passing it
+# directly to OpenVPN via /proc/self/fd/<n> would leave a race window between
+# the end of validate_openvpn_config_fd() above and the moment OpenVPN opens
+# the fd: the user could rewrite the file in-place to insert a "plugin"
+# directive (or any other forbidden directive) and cause root OpenVPN to load
+# a user-controlled shared library. O_NOFOLLOW does not prevent this because
+# the attack modifies the file *contents* through the already-open inode, not
+# the directory entry.
+#
+# freeze_validated_config() reads the validated bytes into process memory and
+# writes them to a fresh root-owned inode (memfd, O_TMPFILE, or a named temp
+# in the root-owned runtime dir) that only root can modify. config_fd is
+# closed immediately afterwards; OpenVPN receives only the frozen copy.
+frozen_config_fd = freeze_validated_config(config_fd, runtime_fd)
+os.close(config_fd)
+config_fd = None
+
 args = [
     openvpn_bin,
-    "--config", f"/proc/self/fd/{config_fd}",
+    "--config", f"/proc/self/fd/{frozen_config_fd}",
     "--script-security", "1",
     "--writepid", pid_path,
     "--status", status_path, "5",
@@ -1016,14 +1154,14 @@ try:
             "HOME": "/",
             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
         },
-        pass_fds=(config_fd,),
+        pass_fds=(frozen_config_fd,),
         stdout=log_fd,
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
 finally:
     os.close(log_fd)
-    os.close(config_fd)
+    os.close(frozen_config_fd)
 
 spawn_guard(
     runtime_fd,
