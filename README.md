@@ -43,7 +43,7 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
   - Optional one-time helper (`sudo ./setup-passwordless.sh`) authorizes a restricted Polkit rule.
 
 - **Diagnostics & Theming**:
-  - Embedded monospace log view showing recent OpenVPN output directly in the panel.
+  - Embedded monospace log view showing recent OpenVPN output directly in the panel, safely rendered as plain text.
   - Themed OpenVPN icon in both the status bar and panel, automatically matching your active Omarchy theme colors.
   - Polished layout with hover highlighting and balanced spacing.
   - Centered version indicator (`v 0.1`) at the bottom margin linking directly to the project repository.
@@ -138,7 +138,9 @@ EasyOpenVPN is designed following security hardening practices:
 
 - **Unprivileged Desktop Host**: The UI and state management run inside the desktop user's Quickshell session. Privileged actions are delegated strictly through `pkexec` or the optional locked Polkit helper.
 - **Credential Safety**: VPN credentials are never passed via process command-line arguments (`argv`). Instead, private descriptor-relative mechanisms and strict file permissions (`0600`) are used.
+- **Immutable Snapshot & TOCTOU Elimination**: User-supplied OpenVPN profiles are snapshotted into an immutable, root-owned descriptor (sealed `memfd` with write seals `F_SEAL_WRITE` / `O_TMPFILE`) before directive inspection. The mutable user descriptor is closed immediately, and validation is performed directly on the sealed snapshot passed to root OpenVPN, completely preventing in-place rewrite races (TOCTOU) from injecting forbidden directives (such as `plugin`).
 - **Path & Directive Hardening**: OpenVPN profiles are inspected with `O_NOFOLLOW` checks. Dangerous directives that could trigger arbitrary code execution or hook into system processes (such as `plugin`, nested `config`, `iproute`, management sockets, and custom script hooks) are rejected.
+- **Log Sanitization & Safe Rendering**: Recent OpenVPN logs are strictly rendered as `Text.PlainText`, preventing server-controlled log strings (such as `AUTH_FAILED`) from injecting rich text or triggering unauthorized network requests via HTML/image tags.
 - **Firewall Isolation**: The kill switch uses an independent `inet simpleopenvpn` nftables table. Existing system firewall configurations (e.g., UFW) are left untouched.
 
 ---

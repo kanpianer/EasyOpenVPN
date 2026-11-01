@@ -877,6 +877,7 @@ Panel {
               y: logCard.contentTopInset
               width: logCard.width - logCard.contentLeftInset - logCard.contentRightInset
               text: service.logTail
+              textFormat: Text.PlainText
               color: root.dim
               font.family: "monospace"
               font.pixelSize: Style.font.caption
