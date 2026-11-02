@@ -102,6 +102,16 @@ polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
         action.lookup("program") == "$install_dir/openvpn-ctl" &&
         subject.user == "$target_user") {
+        // Defence-in-depth: when the polkit version exposes the full command
+        // line, restrict to the two subcommands the rule is intended to cover.
+        // Older polkit versions that do not populate command_line return an
+        // empty string; in that case the program-path check above is sufficient.
+        var cmdline = action.lookup("command_line") || "";
+        if (cmdline !== "" &&
+            cmdline !== "$install_dir/openvpn-ctl connect" &&
+            cmdline !== "$install_dir/openvpn-ctl disconnect") {
+            return polkit.Result.NOT_HANDLED;
+        }
         return polkit.Result.YES;
     }
 });

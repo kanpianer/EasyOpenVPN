@@ -369,6 +369,7 @@ Panel {
           Text {
             visible: service.controlError !== ""
             width: parent.width
+            textFormat: Text.PlainText
             text: service.controlError
             color: root.urgent
             font.family: root.fontFamily

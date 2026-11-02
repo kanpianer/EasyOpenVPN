@@ -982,6 +982,9 @@ def guard_loop(openvpn_pid, pidfd, nft, log_path, stop_path, killswitch_path, au
                         auth_path,
                         openvpn_pid,
                         pidfd,
+                        # line[:160] is server-controlled (AUTH_FAILED log text).
+                        # Callers that display this reason must treat it as
+                        # untrusted data and render it as plain text (not HTML).
                         f"VPN server connection lost: {line[:160]}",
                         stop_path,
                     )
@@ -1583,7 +1586,7 @@ pick_file|add_profile)
     current_selected=$(openvpn_selected_config 2>/dev/null || true)
     if [[ -z "$current_selected" || ! -r "$current_selected" ]]; then
       openvpn_secure_write_line "$openvpn_config_file" "$first_file"
-    elif ! openvpn_tunnel_established && ! openvpn_process_alive; then
+    elif ! openvpn_tunnel_established && ! openvpn_is_running; then
       openvpn_secure_write_line "$openvpn_config_file" "$first_file"
     fi
     echo "imported ${#found_files[@]} profiles"
@@ -1629,7 +1632,7 @@ open_folder|pick_folder|import_folder)
       current_selected=$(openvpn_selected_config 2>/dev/null || true)
       if [[ -z "$current_selected" || ! -r "$current_selected" ]]; then
         openvpn_secure_write_line "$openvpn_config_file" "${found_files[0]}"
-      elif ! openvpn_tunnel_established && ! openvpn_process_alive; then
+      elif ! openvpn_tunnel_established && ! openvpn_is_running; then
         openvpn_secure_write_line "$openvpn_config_file" "${found_files[0]}"
       fi
       echo "imported ${#found_files[@]} profiles from $selected_dir"
