@@ -453,6 +453,7 @@ Panel {
               Text {
                 visible: service.blockedReason !== ""
                 width: parent.width
+                textFormat: Text.PlainText
                 text: service.blockedSince !== ""
                   ? (service.blockedReason + " • " + service.blockedSince)
                   : service.blockedReason

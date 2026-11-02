@@ -391,6 +391,32 @@ def read_fd(fd, max_bytes=65536):
         chunks.append(chunk)
     return b"".join(chunks)
 
+def normalize_config_line(raw):
+    # Parser-equivalence invariant:
+    #
+    # The validator must tokenize a profile exactly the way the root OpenVPN
+    # process will. OpenVPN reads config lines as C strings and tokenizes with
+    # C isspace(), while Python's text layer and shlex differ in a few
+    # security-relevant ways:
+    #
+    # - A NUL byte terminates a C string. Python keeps it inside the line, so
+    #   a line such as "</ca>\0" would be seen as an unknown tag by Python but
+    #   as a valid inline-block terminator by OpenVPN, hiding later directives
+    #   from validation.
+    # - Vertical tab and form feed are whitespace for C isspace(), but shlex
+    #   only splits on space, tab, CR and LF. "setenv opt\vplugin ..." would
+    #   therefore look harmless to Python but parse as "setenv opt plugin" in
+    #   OpenVPN.
+    # - OpenVPN skips a leading UTF-8 BOM, while Python preserves U+FEFF in the
+    #   first token.
+    #
+    # Normalize all three cases so a directive cannot be hidden from the
+    # validator while remaining visible to OpenVPN.
+    line = raw.split("\x00", 1)[0]
+    line = line.replace("\ufeff", "")
+    line = line.replace("\v", " ").replace("\f", " ")
+    return line.strip()
+
 def validate_openvpn_config_fd(fd, label):
     # Privileged config policy:
     #
@@ -448,7 +474,7 @@ def validate_openvpn_config_fd(fd, label):
     try:
         config_file = os.fdopen(os.dup(fd), "r", encoding="utf-8", errors="replace")
         for lineno, raw in enumerate(config_file, 1):
-            line = raw.strip()
+            line = normalize_config_line(raw)
             if not line or line.startswith("#") or line.startswith(";"):
                 continue
 
