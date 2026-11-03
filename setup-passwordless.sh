@@ -90,7 +90,9 @@ install -o root -g root -m 0644 "$source_dir/scripts/openvpn-lib" "$install_dir/
 
 # ABI marker checked by openvpn_passwordless_available(). Keep it in sync with
 # openvpn_helper_abi in openvpn-lib.
-printf '1\n' > "$install_dir/abi"
+# ABI 2: bumped to reject stale ABI-1 helpers; requires parser-equivalence and
+#         freeze_config fixes present in the current source tree.
+printf '2\n' > "$install_dir/abi"
 chown root:root "$install_dir/abi"
 chmod 0644 "$install_dir/abi"
 
@@ -133,4 +135,7 @@ Installed:
 The panel still shows a confirmation card before connecting; the system
 password prompt is gone. Re-run this script after updating the plugin so the
 installed copy matches. Remove with: sudo $0 --remove
+
+IMPORTANT: If you had a previous (ABI 1) installation, the old helper has been
+replaced. The plugin will now delegate to the updated helper automatically.
 EOF

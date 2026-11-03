@@ -48,10 +48,17 @@ openvpn_stop_file="$openvpn_runtime_dir/stop-requested"
 # Optional root-owned copy installed by setup-passwordless.sh. The ABI file is
 # written by that installer; bump it here and in the installer together when the
 # privileged interface changes.
+#
+# ABI history:
+#   1 – original release (pre-parser-fix, pre-freeze-config)
+#   2 – bumped to reject stale helpers from ABI-1 installs; requires the
+#       normalize_config_line parser-equivalence fixes and freeze_config TOCTOU
+#       hardening to be present in the installed copy.  Re-run
+#       setup-passwordless.sh to upgrade an ABI-1 installation.
 openvpn_installed_dir="/usr/local/lib/simpleopenvpn"
 openvpn_installed_ctl="$openvpn_installed_dir/openvpn-ctl"
 openvpn_installed_abi_file="$openvpn_installed_dir/abi"
-openvpn_helper_abi=1
+openvpn_helper_abi=2
 
 # Security model for unprivileged state:
 #
@@ -114,10 +121,22 @@ openvpn_passwordless_available() {
   # narrow polkit rule for /usr/local/lib/simpleopenvpn/openvpn-ctl. Both files
   # and the ABI marker must be present before the unprivileged script delegates
   # to it, so a stale or partially installed copy is never trusted.
+  #
+  # ABI mismatch (installed ABI != openvpn_helper_abi) means the installed
+  # helper predates a security-relevant change in the privileged interface and
+  # MUST be refreshed.  The fix is to rerun setup-passwordless.sh as root.
   openvpn_root_owned_file "$openvpn_installed_ctl" || return 1
   openvpn_root_owned_file "$openvpn_installed_dir/openvpn-lib" || return 1
   [[ -r "$openvpn_installed_abi_file" ]] || return 1
-  [[ "$(<"$openvpn_installed_abi_file")" == "$openvpn_helper_abi" ]]
+  local installed_abi
+  installed_abi=$(<"$openvpn_installed_abi_file")
+  if [[ "$installed_abi" != "$openvpn_helper_abi" ]]; then
+    printf 'EasyOpenVPN: stale privileged helper detected (installed ABI %s, required ABI %s).\n' \
+      "$installed_abi" "$openvpn_helper_abi" >&2
+    printf 'EasyOpenVPN: run "sudo %s/setup-passwordless.sh" to upgrade the installed helper.\n' \
+      "$(dirname -- "$(dirname -- "${openvpn_installed_dir}")" 2>/dev/null || printf '/usr/local/lib')" >&2
+    return 1
+  fi
 }
 
 openvpn_can_delegate() {
