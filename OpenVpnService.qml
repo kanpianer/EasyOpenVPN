@@ -20,6 +20,8 @@ Item {
   property bool blocked: false
   property bool blockedEnforced: false
   property bool passwordless: false
+  property bool passwordlessPrompted: false
+  readonly property bool settingUpPasswordless: setupProc.running
   property string blockedReason: ""
   property string blockedSince: ""
 
@@ -45,7 +47,7 @@ Item {
   property bool pendingSawRunning: false
   property bool lastAttemptFailed: false
 
-  readonly property bool busy: controlProc.running || pickerProc.running
+  readonly property bool busy: controlProc.running || pickerProc.running || setupProc.running
   readonly property bool active: connected || connecting || pendingAction === "connect"
 
   function hasSavedAuthFor(path) {
@@ -146,6 +148,22 @@ Item {
     runControl("clear_credentials", [root.config])
   }
 
+  function setupPasswordless() {
+    if (setupProc.running) return
+    setupProc.command = [scriptPath, "setup_passwordless"]
+    setupProc.running = true
+  }
+
+  function dismissPasswordless() {
+    runControl("dismiss_passwordless")
+  }
+
+  function removePasswordless() {
+    if (setupProc.running) return
+    setupProc.command = [scriptPath, "remove_passwordless"]
+    setupProc.running = true
+  }
+
   property var _controlQueue: []
 
   function runControl(action, extraArgs, stdinData) {
@@ -208,6 +226,7 @@ Item {
       root.blocked = data.blocked === true
       root.blockedEnforced = data.blocked_enforced === true
       root.passwordless = data.passwordless === true
+      root.passwordlessPrompted = data.passwordless_prompted === true
       root.blockedReason = String(data.blocked_reason || "")
       root.blockedSince = String(data.blocked_since || "")
       root.iface = String(data.iface || "")
@@ -295,6 +314,21 @@ Item {
 
   Process {
     id: pickerProc
+    onRunningChanged: {
+      if (!running) {
+        Qt.callLater(function() { root.refresh() })
+      }
+    }
+  }
+
+  Process {
+    id: setupProc
+    stderr: SplitParser {
+      onRead: function(line) {
+        var text = line.trim()
+        if (text !== "") console.log("EasyOpenVPN setup-passwordless: " + text)
+      }
+    }
     onRunningChanged: {
       if (!running) {
         Qt.callLater(function() { root.refresh() })

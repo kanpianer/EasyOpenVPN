@@ -259,10 +259,32 @@ Panel {
     id: service
   }
 
+  Timer {
+    id: firstUseTimer
+    interval: 350
+    repeat: false
+    running: false
+    onTriggered: {
+      if (!service.passwordless && !service.passwordlessPrompted && !service.settingUpPasswordless) {
+        service.setupPasswordless()
+      }
+    }
+  }
+
+  Connections {
+    target: service
+    function onPasswordlessPromptedChanged() {
+      if (root.opened && !service.passwordless && !service.passwordlessPrompted && !service.settingUpPasswordless) {
+        firstUseTimer.restart()
+      }
+    }
+  }
+
   onOpenedChanged: {
     if (opened) {
       service.refresh()
       if (panelFlick) panelFlick.contentY = 0
+      firstUseTimer.restart()
     } else {
       cancelDelete()
       dragActive = false
@@ -478,6 +500,47 @@ Panel {
           visible: service.blocked
           width: parent.width
           foreground: root.foreground
+        }
+
+        // --------------------------------------------- PASSWORDLESS CONNECT
+        BorderSurface {
+          id: passwordlessCard
+          width: parent.width
+          visible: !service.passwordless || service.settingUpPasswordless
+          height: passwordlessLayout.implicitHeight + topPadding + bottomPadding
+          padding: Style.space(8)
+          radius: Style.cornerRadius
+          color: Style.controlFill(false, false, root.foreground, Color.accent)
+
+          RowLayout {
+            id: passwordlessLayout
+            x: passwordlessCard.contentLeftInset
+            y: passwordlessCard.contentTopInset
+            width: passwordlessCard.width - passwordlessCard.contentLeftInset - passwordlessCard.contentRightInset
+            spacing: Style.space(8)
+
+            Text {
+              Layout.fillWidth: true
+              text: service.settingUpPasswordless
+                ? "Authorizing passwordless connection…"
+                : "Passwordless connect is disabled."
+              color: service.settingUpPasswordless ? Color.accent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Button {
+              text: "Enable"
+              iconText: "󰌾"
+              bordered: true
+              visible: !service.settingUpPasswordless
+              enabled: !service.busy
+              foreground: root.foreground
+              tooltipText: "Authorize passwordless connect/disconnect via Polkit"
+              onClicked: service.setupPasswordless()
+            }
+          }
         }
 
         // ---------------------------------------------------------- PROFILES

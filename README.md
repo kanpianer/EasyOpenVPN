@@ -4,7 +4,7 @@
   <img src="preview.png" alt="EasyOpenVPN Panel" width="422" />
 </p>
 
-EasyOpenVPN is a lightweight, secure Omarchy bar widget for managing and running OpenVPN connections directly from the Omarchy desktop shell. It provides a compact status icon, a full-featured profile manager, saved credentials, direct connect/disconnect controls, automatic kill-switch protection, and recent OpenVPN log output.
+EasyOpenVPN is a lightweight Omarchy bar widget for managing and running OpenVPN connections directly from the Omarchy desktop shell. It provides a compact status icon, a full-featured profile manager, saved credentials, direct connect/disconnect controls, automatic kill-switch protection, and recent OpenVPN log output.
 
 The plugin is intentionally focused: it does not require NetworkManager VPN plugins or systemd services. It is built for users who already have `.ovpn` or `.conf` files and want a streamlined, theme-aware bar widget with reliable connection status and instant leak protection.
 
@@ -18,6 +18,7 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
   - **Drag-and-Drop Reordering**: Press and hold any profile to drag and reorder; custom order is automatically saved across restarts.
   - **Multi-Selection & Batch Delete**: Select individual profiles with checkboxes or click **Select All**, then remove them with **Delete**.
   - **Quick Single-Profile Delete**: Per-profile trash icon with two-step click-to-confirm safety.
+  - **Non-destructive Removal**: Delete removes entries from the plugin list only. Local `.ovpn`/`.conf` files and saved credentials are retained; use **Add Profile** or **Open Folder** to import them again.
   - Profiles and settings persist across restarts under `~/.local/state`.
 
 - **Profile-Specific Credentials**:
@@ -40,7 +41,8 @@ The plugin is intentionally focused: it does not require NetworkManager VPN plug
 - **Seamless Direct & Passwordless Connect**:
   - Connect and disconnect directly via the toggle switch in the panel header without repeated password prompts once configured.
   - Right-clicking the status bar icon disconnects immediately.
-  - Optional one-time helper (`sudo ./setup-passwordless.sh`) authorizes a restricted Polkit rule.
+  - Automatically prompts for authorization via Polkit upon first use after installation, or configure manually with `sudo ./setup-passwordless.sh`.
+  - Decline authorization anytime if you prefer entering your password on every connection.
 
 - **Diagnostics & Theming**:
   - Embedded monospace log view showing recent OpenVPN output directly in the panel, safely rendered as plain text.
@@ -59,6 +61,9 @@ All runtime dependencies (`openvpn`, `jq`, `zenity`, `python`, `nftables`) are i
 ---
 
 ## Installation
+
+**Release status:** this is a new plugin under marketplace review and is not yet
+listed. The commands below install directly from the source repository.
 
 ### Via Omarchy CLI (Recommended)
 
@@ -98,7 +103,11 @@ Clone the repository and run the installer, which automatically handles dependen
 
 ## Passwordless Connect (Recommended)
 
-By default, connecting uses `pkexec`, prompting for your account password via the Omarchy Polkit dialog. To connect and disconnect directly from the panel toggle without entering your password, run the one-time helper script in a terminal:
+When you first open EasyOpenVPN after installing, a Polkit authorization dialog will automatically appear requesting superuser privileges to enable passwordless VPN connections.
+
+- **To enable**: enter your user password and confirm. Future connections and disconnections from the panel will not prompt for a password.
+- **To decline**: click **Cancel** in the Polkit prompt. EasyOpenVPN will remember your choice and will not prompt automatically again. Connections will continue to use standard `pkexec` password prompts on each connect.
+- **To change later**: you can click **Enable** directly on the Passwordless card in the panel, or run the helper script in a terminal:
 
 ```sh
 sudo ./setup-passwordless.sh
@@ -106,11 +115,46 @@ sudo ./setup-passwordless.sh
 
 The script installs a root-owned copy of the control script under `/usr/local/lib/simpleopenvpn` and a narrow Polkit rule authorizing **only** that exact program for `connect` and `disconnect`. The rule does not permit running arbitrary commands as root.
 
+The helper uses ABI **2**, matching the parser and profile-snapshot safeguards
+required by this initial release. The client checks the installed scripts and
+ABI marker before delegation. Missing, incompatible, or unsafe helper files
+prevent automatic delegation; normal connections use a Polkit password prompt
+when the optional helper is unavailable.
+
 To remove the passwordless rule at any time:
 
 ```sh
 sudo ./setup-passwordless.sh --remove
 ```
+
+---
+
+## Troubleshooting
+
+### OpenVPN executable not found
+
+A `.ovpn` or `.conf` file is a connection profile, not the OpenVPN application.
+The controller requires the system executable `/usr/bin/openvpn`. If the panel
+reports that it is missing, install the package from a desktop terminal:
+
+```sh
+omarchy pkg add openvpn
+/usr/bin/openvpn --version
+```
+
+The controller now reports an actionable error instead of an unhandled
+`FileNotFoundError`. A missing dependency is not fixed by selecting a different
+profile or creating a directory. If installation reports a privilege or
+container restriction, complete installation in your normal desktop terminal;
+the plugin does not bypass system authorization.
+
+### A removed profile is still on disk
+
+This is intentional. **Delete** only removes the plugin's list entry, not the
+local configuration file or saved credentials. Removed entries stay absent
+across status refreshes. Use **Add Profile** or **Open Folder** to import them
+again; **Clear Auth** can separately remove saved credentials for a selected
+profile.
 
 ---
 

@@ -124,6 +124,10 @@ trap - EXIT
 
 systemctl try-reload-or-restart polkit.service 2>/dev/null || true
 
+# Never write UI bookkeeping inside the desktop user's home as root. The
+# unprivileged setup_passwordless action records the prompt before pkexec;
+# user-controlled parent directories or symlinks must not redirect root writes.
+
 cat <<EOF
 Passwordless SimpleOpenVPN connect is now enabled for user: $target_user
 

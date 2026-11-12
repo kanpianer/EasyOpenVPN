@@ -50,16 +50,9 @@ status)
   configs_json="[]"
   auth_configs_json="[]"
 	  mapfile -t saved_profiles < <(openvpn_known_profiles)
-	  if [[ -d "$config_dir" ]]; then
-	    mapfile -t conf_list < <(
-	      {
-	        printf '%s\n' "${saved_profiles[@]}"
-	        find "$config_dir" -maxdepth 2 -type f \( -name '*.ovpn' -o -name '*.conf' \) 2>/dev/null | sort
-	      } | grep -E '\.(ovpn|conf)$' | awk '!seen[$0]++'
-	    )
-	  else
-	    conf_list=("${saved_profiles[@]}")
-	  fi
+  # Only explicitly imported profiles belong in the panel. Rescanning the
+  # selected directory would resurrect entries removed without deleting files.
+  conf_list=("${saved_profiles[@]}")
 	  if ((${#conf_list[@]} > 0)); then
 	    configs_json=$(printf '%s\n' "${conf_list[@]}" | jq -R . | jq -s .)
 
@@ -113,6 +106,11 @@ status)
     passwordless=true
   fi
 
+  passwordless_prompted=false
+  if openvpn_is_passwordless_prompted || [[ "$passwordless" == "true" ]]; then
+    passwordless_prompted=true
+  fi
+
   iface=$(openvpn_tun_iface || true)
   ip_addr=""
   [[ -n "$iface" ]] && ip_addr=$(ip -4 -o addr show dev "$iface" 2>/dev/null | awk '{ print $4; exit }' || true)
@@ -142,6 +140,7 @@ status)
     --argjson blocked "$killswitch" \
     --argjson blocked_enforced "$killswitch_enforced" \
     --argjson passwordless "$passwordless" \
+    --argjson passwordless_prompted "$passwordless_prompted" \
     --arg blocked_reason "${killswitch_reason:-}" \
     --arg blocked_since "${killswitch_since:-}" \
     --arg iface "${iface:-}" \
@@ -163,6 +162,7 @@ status)
       blocked: $blocked,
       blocked_enforced: $blocked_enforced,
       passwordless: $passwordless,
+      passwordless_prompted: $passwordless_prompted,
       blocked_reason: $blocked_reason,
       blocked_since: $blocked_since,
       iface: $iface,
@@ -370,7 +370,14 @@ def secure_replace(dir_fd, name, data, mode, owner_uid, owner_gid):
                 pass
 
 def validate_root_executable(path):
-    st = os.stat(path)
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        fail(f"OpenVPN executable not found: {path}. This is the VPN program, "
+             "not your .ovpn profile. Install it in a terminal with: "
+             "omarchy pkg add openvpn")
+    except OSError as error:
+        fail(f"cannot inspect OpenVPN executable {path}: {error}")
     if not stat.S_ISREG(st.st_mode):
         fail(f"not a regular executable: {path}")
     if st.st_uid != 0 or st.st_mode & 0o022:
@@ -1475,8 +1482,8 @@ set_order|save_order)
   ;;
 
 remove_profile|remove_profiles)
-  # Deleting nodes removes .ovpn files from the user's profile list.
-  # Accepts one or multiple paths. Trashes the files when gio is available.
+  # Forget entries only. Never trash or delete user-owned source profiles.
+  # Accepts one or multiple paths, including profiles no longer on disk.
   targets=("$@")
   if [[ ${#targets[@]} -eq 0 ]]; then
     echo "Usage: remove_profile <path> [path...]" >&2
@@ -1484,38 +1491,22 @@ remove_profile|remove_profiles)
   fi
   for target in "${targets[@]}"; do
     [[ -z "$target" ]] && continue
-    if [[ -L $target || ! -f $target ]]; then
-      continue
-    fi
-    real_target=$(realpath -e -- "$target" 2>/dev/null || true)
-    [[ -z "$real_target" || ! -r "$real_target" ]] && continue
-    case "$real_target" in
-      *.ovpn|*.conf) ;;
-      *) continue ;;
-    esac
-    if ! openvpn_all_profiles | grep -Fxq -- "$real_target"; then
-      continue
-    fi
-
-    # Forget the remembered entry and any stored credentials for the profile.
-    if [[ -r "$openvpn_profiles_file" ]]; then
-      grep -Fxv -e "$target" -e "$real_target" "$openvpn_profiles_file" 2>/dev/null |
-        awk '!seen[$0]++' | openvpn_atomic_publish "$openvpn_profiles_file" || true
-    fi
-    auth_f=$(openvpn_profile_auth_file "$real_target" 2>/dev/null || true)
-    [[ -n "$auth_f" ]] && rm -f -- "$auth_f"
-
-    if command -v gio &>/dev/null && gio trash -- "$real_target" 2>/dev/null; then
-      :
-    else
-      rm -f -- "$real_target"
+    real_target=$(realpath -m -- "$target" 2>/dev/null || printf '%s' "$target")
+    # Filter state only; retain source files and saved credentials for re-import.
+    if [[ -e "$openvpn_profiles_file" ]]; then
+      remaining=()
+      while IFS= read -r candidate; do
+        [[ "$candidate" == "$target" || "$candidate" == "$real_target" ]] && continue
+        remaining+=("$candidate")
+      done < <(openvpn_safe_read_lines "$openvpn_profiles_file")
+      { if ((${#remaining[@]})); then printf '%s\n' "${remaining[@]}"; fi; } |
+        openvpn_atomic_publish "$openvpn_profiles_file"
     fi
   done
 
-  # Move the selection to the next remaining node when the deleted one was
-  # selected, so the panel never points at a file that no longer exists.
+  # Selection follows membership, not file existence: removed files still exist.
   current_selected=$(openvpn_selected_config 2>/dev/null || true)
-  if [[ -n "$current_selected" && ! -r "$current_selected" ]]; then
+  if [[ -n "$current_selected" ]] && ! openvpn_all_profiles | grep -Fxq -- "$current_selected"; then
     next=""
     while IFS= read -r candidate; do
       [[ -n "$candidate" && -r "$candidate" ]] || continue
@@ -1707,6 +1698,36 @@ try:
 finally:
     os.close(fd)
 PY
+  echo "ok"
+  ;;
+
+setup_passwordless)
+  openvpn_mark_passwordless_prompted
+  if [[ ! -f "$openvpn_setup_script" ]]; then
+    echo "EasyOpenVPN: setup-passwordless.sh not found at $openvpn_setup_script" >&2
+    exit 1
+  fi
+  current_user="${USER:-$(id -un)}"
+  if pkexec "$openvpn_setup_script" --user "$current_user"; then
+    echo "ok"
+    exit 0
+  else
+    rc=$?
+    echo "EasyOpenVPN: passwordless setup cancelled or declined (exit $rc)" >&2
+    exit $rc
+  fi
+  ;;
+
+dismiss_passwordless)
+  openvpn_mark_passwordless_prompted
+  echo "ok"
+  ;;
+
+remove_passwordless)
+  if [[ -f "$openvpn_setup_script" ]]; then
+    pkexec "$openvpn_setup_script" --remove || true
+  fi
+  rm -f -- "$openvpn_passwordless_prompted_file"
   echo "ok"
   ;;
 
