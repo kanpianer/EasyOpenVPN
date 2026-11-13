@@ -48,6 +48,39 @@ install_dir="/usr/local/lib/simpleopenvpn"
 rule_file="/etc/polkit-1/rules.d/60-simpleopenvpn.rules"
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
+# Check every destination ancestor before root writes/removes anything. Never
+# repair/chown an attacker-owned directory into apparent trust: reject it.
+/usr/bin/python3 -I -S - "$install_dir" "$rule_file" <<'PY'
+import os
+import stat
+import sys
+
+for target in sys.argv[1:]:
+    current = "/"
+    for part in target.strip("/").split("/"):
+        current = os.path.join(current, part)
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            break
+        if (stat.S_ISLNK(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o022):
+            raise SystemExit(f"EasyOpenVPN: unsafe installation path: {current}")
+        if current != target and not stat.S_ISDIR(info.st_mode):
+            raise SystemExit(f"EasyOpenVPN: not a directory: {current}")
+# Existing leaves must also be trusted; in particular never truncate an ABI
+# symlink or write through a hard link to an unrelated privileged file.
+for name in ("openvpn-ctl", "openvpn-lib", "abi"):
+    path = os.path.join(sys.argv[1], name)
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        continue
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & 0o022 or info.st_nlink != 1):
+        raise SystemExit(f"EasyOpenVPN: unsafe installed file: {path}")
+PY
+
 if ((remove)); then
   rm -f -- "$rule_file"
   rm -rf -- "$install_dir"
@@ -90,9 +123,8 @@ install -o root -g root -m 0644 "$source_dir/scripts/openvpn-lib" "$install_dir/
 
 # ABI marker checked by openvpn_passwordless_available(). Keep it in sync with
 # openvpn_helper_abi in openvpn-lib.
-# ABI 2: bumped to reject stale ABI-1 helpers; requires parser-equivalence and
-#         freeze_config fixes present in the current source tree.
-printf '2\n' > "$install_dir/abi"
+# ABI 4: includes guard/log integrity and nonblocking privileged reads.
+printf '4\n' > "$install_dir/abi"
 chown root:root "$install_dir/abi"
 chmod 0644 "$install_dir/abi"
 
@@ -140,6 +172,6 @@ The panel still shows a confirmation card before connecting; the system
 password prompt is gone. Re-run this script after updating the plugin so the
 installed copy matches. Remove with: sudo $0 --remove
 
-IMPORTANT: If you had a previous (ABI 1) installation, the old helper has been
+IMPORTANT: If you had a previous (ABI 1, 2 or 3) installation, the old helper has been
 replaced. The plugin will now delegate to the updated helper automatically.
 EOF

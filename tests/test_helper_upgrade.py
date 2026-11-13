@@ -10,7 +10,7 @@ LIB = ROOT / "scripts/openvpn-lib"
 
 
 class HelperUpgradeTests(unittest.TestCase):
-    def check_helper(self, marker="2\n", missing=None, unsafe=None):
+    def check_helper(self, marker="4\n", missing=None, unsafe=None):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             for name in ("openvpn-ctl", "openvpn-lib", "abi"):
@@ -27,7 +27,8 @@ openvpn_installed_abi_file="$2/abi"
 unsafe="$3"
 openvpn_root_owned_file() { [[ -f "$1" && ! -L "$1" && "${1##*/}" != "$unsafe" ]]; }
 python3() {
-  command python3 -c '
+  shift 2  # Skip production isolation flags in this in-process mock.
+  command python3 -I -S -c '
 import os, sys
 from unittest.mock import patch
 code = sys.stdin.read()
@@ -54,11 +55,11 @@ openvpn_passwordless_available
     def test_pre_parser_helper_rejected_with_refresh_instruction(self):
         result = self.check_helper("1\n")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("installed ABI 1, required ABI 2", result.stderr)
+        self.assertIn("installed ABI 1, required ABI 4", result.stderr)
         self.assertIn(f"sudo {ROOT}/setup-passwordless.sh", result.stderr)
 
     def test_invalid_markers_rejected(self):
-        for marker in ("", "3\n", "2\nextra\n", "x" * 100, "é\n"):
+        for marker in ("", "2\n", "3\n", "4\nextra\n", "x" * 100, "é\n"):
             with self.subTest(marker=marker):
                 self.assertNotEqual(self.check_helper(marker).returncode, 0)
 
@@ -77,7 +78,7 @@ openvpn_passwordless_available
         installer = (ROOT / "setup-passwordless.sh").read_text()
         installed = re.search(r"printf '(\d+)\\n' > \"\$install_dir/abi\"", installer)[1]
         self.assertEqual(required, installed)
-        self.assertEqual(required, "2")
+        self.assertEqual(required, "4")
 
     def test_both_privileged_actions_gate_delegation(self):
         source = (ROOT / "scripts/openvpn-ctl").read_text()

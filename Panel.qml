@@ -588,6 +588,7 @@ Panel {
 
           Text {
             visible: service.configs.length === 0
+            textFormat: Text.PlainText
             text: "No .ovpn files found in " + service.configDir
             color: root.dim
             font.family: root.fontFamily

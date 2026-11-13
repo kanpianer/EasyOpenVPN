@@ -95,9 +95,7 @@ Item {
     runControl("set_config", [path])
   }
 
-  // Remove a profile from the node list. The helper refuses anything that is
-  // not one of the profiles it lists, and trashes the file instead of deleting
-  // it outright when gio is available.
+  // Forget a profile from the list without deleting its source file.
   function removeProfile(path) {
     if (!path) return
     removeProfiles([path])
@@ -141,6 +139,12 @@ Item {
   }
 
   function setCredentials(user, pass) {
+    // The stdin protocol is line-delimited; reject field injection rather than
+    // letting a pasted newline change the password or target profile.
+    if (/[\r\n\x00]/.test(user) || /[\r\n\x00]/.test(pass) || /[\r\n\x00]/.test(root.config)) {
+      controlError = "Credentials and profile paths must not contain line breaks or NUL."
+      return
+    }
     runControl("set_credentials", [], user + "\n" + pass + "\n" + root.config + "\n")
   }
 

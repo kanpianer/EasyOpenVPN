@@ -43,22 +43,9 @@ BarWidget {
     id: service
   }
 
-  // Backstop for the 9-second connect limit. The privileged guard also aborts
-  // an unfinished handshake, but an older installed guard copy may still use a
-  // longer timeout; when passwordless mode is active this timer can cancel
-  // without a password prompt. Cancelling never engages the kill switch.
-  Timer {
-    id: connectTimeout
-    interval: 9000
-    repeat: false
-    running: service.passwordless && service.connecting && !service.connected && !service.blocked
-    onTriggered: {
-      if (service.connecting && !service.connected && !service.blocked) {
-        service.lastAttemptFailed = true
-        service.disconnectVpn()
-      }
-    }
-  }
+  // Only the privileged guard enforces handshake timeouts. A UI timer must
+  // never call disconnect automatically: that action restores the network and
+  // could clear a kill switch engaged since the last asynchronous status poll.
 
   Loader {
     id: panelLoader

@@ -59,7 +59,9 @@ openvpn_stop_file="$openvpn_runtime_dir/stop-requested"
 openvpn_installed_dir="/usr/local/lib/simpleopenvpn"
 openvpn_installed_ctl="$openvpn_installed_dir/openvpn-ctl"
 openvpn_installed_abi_file="$openvpn_installed_dir/abi"
-openvpn_helper_abi=2
+#   3 – strict token boundaries and isolated Python imports (-I -S).
+#   4 – guard/log integrity, bounded nonblocking reads, audit hardening.
+openvpn_helper_abi=4
 
 openvpn_script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 openvpn_plugin_dir=$(cd -- "$openvpn_script_dir/.." && pwd)
@@ -143,7 +145,7 @@ openvpn_passwordless_available() {
   openvpn_root_owned_file "$openvpn_installed_dir/openvpn-lib" || return 1
   openvpn_root_owned_file "$openvpn_installed_abi_file" || return 1
   local installed_abi
-  installed_abi=$(python3 - "$openvpn_installed_abi_file" <<'PY'
+  installed_abi=$(python3 -I -S - "$openvpn_installed_abi_file" <<'PY'
 import os
 import stat
 import sys
@@ -194,11 +196,11 @@ openvpn_can_delegate() {
 openvpn_safe_read_line() {
   local file="$1"
   [[ -e "$file" ]] || return 1
-  python3 -c '
+  python3 -I -S -c '
 import os, stat, sys
 path, uid_s = sys.argv[1], sys.argv[2]
 uid = int(uid_s)
-flags = os.O_RDONLY
+flags = os.O_RDONLY | os.O_NONBLOCK
 if hasattr(os, "O_NOFOLLOW"):
     flags |= os.O_NOFOLLOW
 fd = None
@@ -209,7 +211,10 @@ try:
         raise SystemExit(1)
     with os.fdopen(fd, "r", encoding="utf-8", errors="replace", closefd=True) as fh:
         fd = None
-        line = fh.readline().rstrip("\n\r")
+        line = fh.readline(65537)
+        if len(line) > 65536:
+            raise SystemExit(1)
+        line = line.rstrip("\n\r")
     sys.stdout.write(line)
 except OSError:
     raise SystemExit(1)
@@ -227,11 +232,11 @@ finally:
 openvpn_safe_read_lines() {
   local file="$1"
   [[ -e "$file" ]] || return 0
-  python3 -c '
+  python3 -I -S -c '
 import os, stat, sys
 path, uid_s = sys.argv[1], sys.argv[2]
 uid = int(uid_s)
-flags = os.O_RDONLY
+flags = os.O_RDONLY | os.O_NONBLOCK
 if hasattr(os, "O_NOFOLLOW"):
     flags |= os.O_NOFOLLOW
 fd = None
@@ -266,7 +271,7 @@ openvpn_atomic_publish() {
   # opened directory with fstat(), then create and rename the temp file relative
   # to that same dir_fd. This closes the race where an attacker replaces the
   # directory path after validation but before open/rename.
-  python3 -c '
+  python3 -I -S -c '
 import os
 import secrets
 import stat
@@ -277,7 +282,7 @@ uid = int(uid_text)
 if basename != os.path.basename(basename) or basename in ("", ".", ".."):
     raise SystemExit("EasyOpenVPN: invalid target filename")
 
-dir_flags = os.O_RDONLY
+dir_flags = os.O_RDONLY | os.O_NONBLOCK
 if hasattr(os, "O_DIRECTORY"):
     dir_flags |= os.O_DIRECTORY
 if hasattr(os, "O_NOFOLLOW"):
@@ -375,7 +380,7 @@ openvpn_secure_copy_file() {
   # after validation. Copying from/to those descriptors avoids source reopens and
   # destination directory replacement races. This mirrors the openat/renameat
   # style behavior requested by HANCORE-linux.
-  python3 -c '
+  python3 -I -S -c '
 import os
 import secrets
 import stat
@@ -386,8 +391,8 @@ uid = int(uid_text)
 if basename != os.path.basename(basename) or basename in ("", ".", ".."):
     raise SystemExit("EasyOpenVPN: invalid target filename")
 
-read_flags = os.O_RDONLY
-dir_flags = os.O_RDONLY
+read_flags = os.O_RDONLY | os.O_NONBLOCK
+dir_flags = os.O_RDONLY | os.O_NONBLOCK
 if hasattr(os, "O_DIRECTORY"):
     dir_flags |= os.O_DIRECTORY
 if hasattr(os, "O_NOFOLLOW"):

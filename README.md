@@ -115,11 +115,20 @@ sudo ./setup-passwordless.sh
 
 The script installs a root-owned copy of the control script under `/usr/local/lib/simpleopenvpn` and a narrow Polkit rule authorizing **only** that exact program for `connect` and `disconnect`. The rule does not permit running arbitrary commands as root.
 
-The helper uses ABI **2**, matching the parser and profile-snapshot safeguards
-required by this initial release. The client checks the installed scripts and
-ABI marker before delegation. Missing, incompatible, or unsafe helper files
-prevent automatic delegation; normal connections use a Polkit password prompt
-when the optional helper is unavailable.
+The helper uses ABI **4**, requiring strict OpenVPN token boundaries, immutable
+profile snapshots, isolated Python startup (`-I -S`), and guard/log integrity fixes. The client checks the
+installed scripts and ABI marker before delegation. Missing, incompatible, or
+unsafe helper files prevent automatic delegation; normal connections use a
+Polkit password prompt when the optional helper is unavailable.
+
+**Security upgrade:** existing ABI 1/2/3 installations must rerun the setup command
+above (or remove passwordless access). Updating the plugin alone does not replace
+the installed privileged copy or revoke its Polkit authorization; rejecting an
+old ABI in the UI does not prevent direct invocation of that old helper.
+
+The privileged validator deliberately rejects ambiguous quote concatenation,
+NUL/BOM bytes, noncanonical inline tags, and config lines over 255 UTF-8 bytes.
+Use whitespace-separated tokens and conventional inline certificate/key blocks.
 
 To remove the passwordless rule at any time:
 
